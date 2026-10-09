@@ -1,0 +1,8 @@
+﻿
+__pycache__/
+*.pyc
+.env
+data/sentinel.db
+data_storage/trading_records.db
+*.db
+

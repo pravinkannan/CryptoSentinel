@@ -1,0 +1,302 @@
+"""
+Entry point for Crypto Sentinel.
+Wires up services using Dependency Injection and manages the main async event loop.
+"""
+
+import asyncio
+import logging
+import json
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any
+
+from core.config import settings
+from core.exceptions import ExchangeAPIError, CryptoSentinelException
+from core.state_manager import StateManager
+from data.market_data_service import MarketDataService
+from engine.signal_generator import SignalGeneratorService
+from data.news_aggregator import NewsAggregatorService
+from engine.ai_evaluator import AIEvaluatorService
+from notifications.notifier import NotificationService
+from execution.paper_trader import PaperTradingService
+from engine.regime_detector import RegimeDetector
+from core.calendar_guard import CalendarGuard
+from engine.journal_manager import JournalManager
+from engine.portfolio_manager import PortfolioManager
+
+logger = logging.getLogger(__name__)
+
+class CryptoSentinelApp:
+    """Main Application Container."""
+    def __init__(self):
+        self.state_manager = StateManager()
+        self.paper_trader = PaperTradingService()
+        self.market_data = MarketDataService(exchange_id=settings.exchange)
+        self.regime_detector = RegimeDetector()
+        self.calendar_guard = CalendarGuard()
+        self.journal_manager = JournalManager()
+        self.portfolio_manager = PortfolioManager(self.paper_trader)
+        self.signal_generator = SignalGeneratorService(
+            percentage_trigger=settings.percentage_move_trigger,
+            static_alerts=settings.static_alerts,
+            atr_period=settings.atr_period,
+            sl_atr_multiplier=settings.sl_atr_multiplier,
+            target_rr_ratio=settings.target_rr_ratio
+        )
+        self.news_aggregator = NewsAggregatorService(
+            rss_feeds=settings.rss_feeds,
+            state_manager=self.state_manager
+        )
+        self.ai_evaluator = AIEvaluatorService(
+            api_key=settings.gemini_api_key,
+            timeout=settings.llm_timeout_seconds
+        )
+        self.notifier = NotificationService(
+            telegram_token=settings.telegram_bot_token,
+            telegram_chat_id=settings.telegram_chat_id,
+            discord_webhook=settings.discord_webhook_url
+        )
+
+    async def initialize(self) -> None:
+        """Initialize asynchronous state and resources."""
+        await self.state_manager.load_state()
+        await self.paper_trader.init_db()
+        await self.journal_manager.ensure_db_exists()
+
+    async def _process_symbol(self, symbol: str, news_data: list, circuit_breaker_active: bool, btc_trend: str) -> None:
+        """Process a single trading symbol across timeframes."""
+        try:
+            # 1. Heartbeat Watchdog & Data Freshness
+            df_5m = await self.market_data.fetch_ohlcv(symbol, '5m')
+            if df_5m is None or df_5m.empty:
+                return
+                
+            latest_timestamp = df_5m['timestamp'].iloc[-1]
+            now_utc = datetime.now(timezone.utc)
+            if latest_timestamp.tzinfo is None:
+                latest_timestamp = latest_timestamp.replace(tzinfo=timezone.utc)
+            age = (now_utc - latest_timestamp).total_seconds()
+            
+            if age > 330:
+                logger.error(f"[HEARTBEAT ERROR] Stale market data detected for {symbol}. Candle age: {age}s. Pausing signal dispatch.")
+                return
+                
+            # 2. Macro Trend Check & Regime Detection
+            df_htf = await self.market_data.fetch_ohlcv(symbol, '1h')
+            htf_trend = self.signal_generator.get_htf_trend(df_htf) if df_htf is not None else "Unknown"
+            
+            df_4h = await self.market_data.fetch_ohlcv(symbol, '4h')
+            htf_4h_trend = self.signal_generator.get_htf_trend(df_4h) if df_4h is not None else "Unknown"
+
+
+            regime_data = self.regime_detector.detect_regime(symbol, df_5m)
+            
+            # Emergency Guard Check
+            if regime_data.get('regime') == "HIGH_VOLATILITY" and regime_data.get('phase') == "PHASE 1":
+                current_price = df_5m['close'].iloc[-1] if not df_5m.empty else 0.0
+                await self.portfolio_manager.check_emergency_guard(symbol, regime_data.get('regime'), regime_data.get('phase'), current_price)
+                
+            current_price_5m = df_5m['close'].iloc[-1] if not df_5m.empty else 0.0
+            if current_price_5m > 0:
+                # Update Paper Trades once per symbol (optimization to prevent multi-timeframe redundant DB calls)
+                await self.paper_trader.update_trades(symbol, df_5m, self.journal_manager, self.notifier)
+
+            for tf in settings.timeframes:
+                logger.info(f"Analyzing {symbol} on {tf}... Regime: {regime_data['regime']}")
+                df = await self.market_data.fetch_ohlcv(symbol, tf)
+                
+                if df is not None and not df.empty:
+                    current_price = float(df.iloc[-1]['close'])
+                    
+
+                    # Check Dynamic Levels
+                    crossed_levels = self.signal_generator.check_dynamic_levels(symbol, current_price, self.state_manager, df)
+                    for name, level in crossed_levels:
+                        logger.info(f"Dynamic level '{name}' ({level}) crossed for {symbol}")
+                        await self.notifier.notify_dynamic_level(symbol, name, level, current_price)
+                        
+                    if circuit_breaker_active:
+                        continue
+
+                    # Fetch Microstructure
+                    microstructure = await self.market_data.get_market_microstructure(symbol)
+                    
+                    # Generate Signals
+                    signal_data = self.signal_generator.analyze_patterns(df, tf, htf_trend, htf_4h_trend, microstructure, symbol, btc_trend, regime_data)
+                    if signal_data:
+                        logger.info(f"Signal detected for {symbol} on {tf}: {signal_data['patterns']}")
+                        
+                        pattern_name = signal_data['patterns'][0] if signal_data['patterns'] else 'Unknown'
+                        signal_data['pattern_drift_status'] = await self.journal_manager.check_pattern_drift(pattern_name)
+                        
+                        # Evaluate via AI
+                        ai_response = await self.ai_evaluator.evaluate_signal(symbol, signal_data, news_data, regime_data)
+                        if ai_response:
+                            try:
+                                ai_data = json.loads(ai_response)
+                                direction = ai_data.get('trade_direction', 'NEUTRAL')
+                                confidence = int(ai_data.get('final_confidence_rating', 0))
+                                verdict = ai_data.get('overall_verdict', 'SKIP').upper()
+                                is_degraded = ai_data.get('is_degraded', False)
+                                
+                                status = "DISPATCH" if (direction in ['LONG', 'SHORT'] and confidence >= 75 and "SKIP" not in verdict and "REJECT" not in verdict) else "REJECT"
+                                logger.info(f"Evaluated: {symbol} {tf} | Score: {confidence}% | Status: {status}")
+                                
+                                if status == "DISPATCH":
+                                    # Funding Rate Filter Check
+                                    fr = signal_data.get('funding_rate', 0.0)
+                                    if direction == 'SHORT' and fr < -0.04 and confidence < 85:
+                                        logger.info(f"Trade filtered out due to funding rate: {fr}%")
+                                        continue
+                                    if direction == 'LONG' and fr > 0.06 and confidence < 85:
+                                        logger.info(f"Trade filtered out due to funding rate: {fr}%")
+                                        continue
+
+                                    # Smart Override Logic
+                                    now = datetime.now(timezone.utc)
+                                    signal_key = f"{symbol}_{tf}"
+                                    active_signals = self.state_manager.state.setdefault("active_signals", {})
+                                    
+                                    if signal_key in active_signals:
+                                        last_sig = active_signals[signal_key]
+                                        last_time = datetime.fromisoformat(last_sig['timestamp'])
+                                        if now - last_time < timedelta(minutes=60):
+                                            if confidence <= last_sig['confidence']:
+                                                logger.info(f"Trade filtered out: A better or equal signal ({last_sig['confidence']}%) is already active for {signal_key}.")
+                                                continue
+                                            else:
+                                                # New signal has higher confidence
+                                                override_msg = f"🚨 OVERRIDE: Better setup detected ({confidence}% vs previous {last_sig['confidence']}%). Use this instead of the previous signal."
+                                                logger.info(override_msg)
+                                                if 'strategy_rationale' in signal_data:
+                                                    signal_data['strategy_rationale'] = f"{override_msg}\n\n{signal_data['strategy_rationale']}"
+                                    
+                                    # Update Active Signals State
+                                    active_signals[signal_key] = {
+                                        'direction': direction,
+                                        'confidence': confidence,
+                                        'timestamp': now.isoformat()
+                                    }
+
+                                    # Log to Journal Manager (which now uses sentinel.db unified table)
+                                    trade_id = await self.journal_manager.log_trade({
+                                        'timestamp': signal_data['timestamp'],
+                                        'symbol': symbol,
+                                        'direction': direction,
+                                        'regime': signal_data['regime'],
+                                        'pattern_name': pattern_name,
+                                        'entry_price': signal_data['entry'],
+                                        'sl_price': signal_data['stop_loss'],
+                                        'tp1_price': signal_data.get('tp1', signal_data['take_profit']),
+                                        'tp2_price': signal_data.get('tp2', signal_data['take_profit']),
+                                        'leverage': float(signal_data.get('leverage_val', 1.0)),
+                                        'confidence_score': confidence,
+                                        'scoring_checklist': ai_data.get('scoring_checklist', [])
+                                    })
+                                    signal_data['trade_id'] = trade_id
+                                    current_drawdown = await self.paper_trader.get_current_drawdown()
+                                    await self.notifier.notify_signal(symbol, signal_data, ai_response, current_drawdown)
+                                else:
+                                    if is_degraded:
+                                        logger.info(f"Trade REJECTED but logging as SHADOW due to DEGRADED pattern: {symbol} {tf}")
+                                        trade_id = await self.journal_manager.log_trade({
+                                            'timestamp': signal_data['timestamp'],
+                                            'symbol': symbol,
+                                            'direction': direction,
+                                            'regime': signal_data['regime'],
+                                            'pattern_name': pattern_name,
+                                            'entry_price': signal_data['entry'],
+                                            'sl_price': signal_data['stop_loss'],
+                                            'tp1_price': signal_data.get('tp1', signal_data['take_profit']),
+                                            'tp2_price': signal_data.get('tp2', signal_data['take_profit']),
+                                            'leverage': float(signal_data.get('leverage_val', 1.0)),
+                                            'confidence_score': confidence,
+                                            'scoring_checklist': ai_data.get('scoring_checklist', []),
+                                            'outcome': 'SHADOW'
+                                        })
+                                    else:
+                                        reason = ai_data.get('strategy_analysis', 'No reason provided')
+                                        logger.info(f"Trade filtered out. Direction: {direction}, Confidence: {confidence}%. Verdict: {verdict}. AI Reason: {reason}")
+                            except Exception as e:
+                                logger.error(f"Error evaluating paper trade: {e}")
+                            
+                # Rate Limiting
+                await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}", exc_info=True)
+
+    async def run_loop(self) -> None:
+        """Main event loop."""
+        try:
+            while True:
+                logger.info("Running iteration...")
+                
+                # Check Calendar Guard
+                is_blackout, blackout_msg = self.calendar_guard.check_blackout_window()
+                if is_blackout:
+                    if blackout_msg:
+                        logger.warning(blackout_msg)
+                        try:
+                            await self.notifier.send_telegram(blackout_msg)
+                        except Exception as e:
+                            logger.error(f"Failed to send telegram: {e}")
+                    # Sleep short and check again
+                    await asyncio.sleep(60)
+                    continue
+                
+                # Check Circuit Breaker
+                current_drawdown = await self.paper_trader.get_current_drawdown()
+                circuit_breaker_active = False
+                if current_drawdown > settings.max_drawdown_percent:
+                    logger.warning(f"CIRCUIT BREAKER TRIGGERED: Drawdown {current_drawdown:.2f}% exceeds {settings.max_drawdown_percent}%. Halting new signals.")
+                    circuit_breaker_active = True
+                
+                # Fetch News
+                news_data = await self.news_aggregator.get_latest_news(limit=5)
+                
+                # Fetch Global BTC Trend
+                btc_df = await self.market_data.fetch_ohlcv('BTC/USDT', '1h')
+                btc_trend = self.signal_generator.get_htf_trend(btc_df) if btc_df is not None else "Unknown"
+                
+                # Process all symbols
+                for symbol in settings.symbols:
+                    await self._process_symbol(symbol, news_data, circuit_breaker_active, btc_trend)
+                
+                # Save persistent state
+                await self.state_manager.save_state(
+                    self.news_aggregator.seen_guids, 
+                    self.state_manager.state.get("last_crossed_alerts", {})
+                )
+
+                # Sleep
+                sleep_seconds = settings.poll_interval_minutes * 60
+                logger.info(f"Iteration complete. Sleeping for {settings.poll_interval_minutes} minutes.")
+                await asyncio.sleep(sleep_seconds)
+                
+        except asyncio.CancelledError:
+            logger.info("Watcher loop cancelled.")
+        except Exception as e:
+            logger.error(f"Unexpected error in run_loop: {e}", exc_info=True)
+        finally:
+            await self.market_data.close()
+
+async def main():
+    logger.info("Starting Advanced Crypto Sentinel (Refactored)...")
+    app = CryptoSentinelApp()
+    await app.initialize()
+    
+    tasks = [asyncio.create_task(app.run_loop())]
+    if app.notifier.bot:
+        tasks.append(asyncio.create_task(app.notifier.start_polling()))
+        
+    try:
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        logger.info("Sentinel stopped by user.")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

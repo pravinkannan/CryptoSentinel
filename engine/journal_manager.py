@@ -1,0 +1,178 @@
+import aiosqlite
+import os
+import json
+import uuid
+from datetime import datetime, timedelta
+from core.config import settings
+from core.db import get_db_connection
+
+class JournalManager:
+    def __init__(self, db_path="data/sentinel.db"):
+        self.db_path = db_path
+
+    async def ensure_db_exists(self):
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        async with get_db_connection(self.db_path) as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS trades (
+                    trade_id TEXT PRIMARY KEY,
+                    timestamp TEXT,
+                    symbol TEXT,
+                    direction TEXT,
+                    entry_price REAL,
+                    sl_price REAL,
+                    tp1_price REAL,
+                    tp2_price REAL,
+                    leverage REAL,
+                    tp1_hit INTEGER DEFAULT 0,
+                    tp2_hit INTEGER DEFAULT 0,
+                    trailing_sl REAL,
+                    status TEXT,
+                    pnl_pct REAL,
+                    net_pnl_pct REAL DEFAULT 0.0,
+                    gross_pnl_pct REAL DEFAULT 0.0
+                )
+            ''')
+            try:
+                await conn.execute('ALTER TABLE trades ADD COLUMN net_pnl_pct REAL DEFAULT 0.0')
+                await conn.execute('ALTER TABLE trades ADD COLUMN gross_pnl_pct REAL DEFAULT 0.0')
+            except Exception:
+                pass
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS evaluations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id TEXT,
+                    signal_payload TEXT,
+                    pattern_name TEXT,
+                    confidence_score REAL,
+                    confluences_applied TEXT,
+                    regime_state TEXT,
+                    mae_pct REAL DEFAULT 0.0,
+                    mfe_pct REAL DEFAULT 0.0,
+                    FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
+                )
+            ''')
+            await conn.commit()
+
+    async def log_trade(self, trade_data):
+        """
+        Logs a trade into the unified sentinel.db.
+        Returns trade_id.
+        """
+        trade_id = str(uuid.uuid4())
+        
+        async with get_db_connection(self.db_path) as conn:
+            # Insert into trades
+            await conn.execute('''
+                INSERT INTO trades (
+                    trade_id, timestamp, symbol, direction, 
+                    entry_price, sl_price, tp1_price, tp2_price, 
+                    leverage, trailing_sl, status, pnl_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                trade_id,
+                trade_data.get('timestamp', datetime.utcnow().isoformat()),
+                trade_data.get('symbol'),
+                trade_data.get('direction'),
+                trade_data.get('entry_price'),
+                trade_data.get('sl_price'),
+                trade_data.get('tp1_price'),
+                trade_data.get('tp2_price'),
+                trade_data.get('leverage'),
+                trade_data.get('sl_price'), # initial trailing_sl is sl_price
+                trade_data.get('outcome', 'PENDING'),
+                trade_data.get('pnl_pct', 0.0)
+            ))
+            
+            # Insert into evaluations
+            await conn.execute('''
+                INSERT INTO evaluations (
+                    trade_id, signal_payload, pattern_name, 
+                    confidence_score, confluences_applied, regime_state,
+                    mae_pct, mfe_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                trade_id,
+                json.dumps(trade_data.get('signal_payload', {})),
+                trade_data.get('pattern_name'),
+                trade_data.get('confidence_score'),
+                json.dumps(trade_data.get('scoring_checklist', [])),
+                trade_data.get('regime'),
+                trade_data.get('mae_pct', 0.0),
+                trade_data.get('mfe_pct', 0.0)
+            ))
+            
+            await conn.commit()
+            return trade_id
+
+    async def update_trade_outcome(self, trade_id, outcome, pnl_pct, mae_pct, mfe_pct, duration_minutes=0.0):
+        """
+        Updates an existing trade with its final outcome and metrics.
+        """
+        async with get_db_connection(self.db_path) as conn:
+            await conn.execute('''
+                UPDATE trades
+                SET status = ?, pnl_pct = ?, net_pnl_pct = ?
+                WHERE trade_id = ?
+            ''', (outcome, pnl_pct, pnl_pct, trade_id))
+            
+            await conn.execute('''
+                UPDATE evaluations
+                SET mae_pct = ?, mfe_pct = ?
+                WHERE trade_id = ?
+            ''', (mae_pct, mfe_pct, trade_id))
+            
+            await conn.commit()
+
+    async def get_pattern_win_rate(self, pattern_name, limit=20):
+        """
+        Calculates the win rate for a specific pattern over the last N trades.
+        Win is considered WIN_TP1 or WIN_TP2.
+        """
+        async with get_db_connection(self.db_path) as conn:
+            cursor = await conn.execute('''
+                SELECT t.status 
+                FROM trades t
+                JOIN evaluations e ON t.trade_id = e.trade_id
+                WHERE e.pattern_name = ? AND t.status IN ('WIN_TP1', 'WIN_TP2', 'LOSS', 'BE')
+                ORDER BY t.timestamp DESC
+                LIMIT ?
+            ''', (pattern_name, limit))
+            results = await cursor.fetchall()
+
+        if not results:
+            return 1.0 # Default to 100% if no history
+
+        total_trades = len(results)
+        wins = sum(1 for r in results if r[0] in ('WIN_TP1', 'WIN_TP2'))
+        
+        return wins / total_trades
+
+    async def check_pattern_drift(self, pattern_name):
+        """
+        Pattern Drift Guard:
+        Returns 'DEGRADED' if the pattern's rolling 20-trade win rate < 40%.
+        Returns 'HEALTHY' if >= 50% or if not enough data to confidently degrade.
+        """
+        win_rate = await self.get_pattern_win_rate(pattern_name, limit=20)
+        
+        if win_rate < 0.40:
+            return 'DEGRADED'
+        
+        return 'HEALTHY'
+
+    async def get_all_pattern_drifts(self):
+        """
+        Returns a dictionary of pattern_name: drift_status for all tracked patterns.
+        """
+        async with get_db_connection(self.db_path) as conn:
+            cursor = await conn.execute('''
+                SELECT DISTINCT pattern_name FROM evaluations
+            ''')
+            patterns = [row[0] for row in await cursor.fetchall()]
+
+        drifts = {}
+        for pattern in patterns:
+            drifts[pattern] = await self.check_pattern_drift(pattern)
+            
+        return drifts
