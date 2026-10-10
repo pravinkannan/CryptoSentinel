@@ -1,30 +1,15 @@
 {
     "seen_guids": [
-        "bfb82842-fb65-4bbb-972a-6bffb9aa1d9a",
-        "https://cointelegraph.com/news/dragonfly-bunker-mode-doomerism-proactive-blockchain-measures",
-        "https://cointelegraph.com/news/wealthy-investors-crypto-advisers-okx-strategy-buybacks",
-        "a47b365a-c336-4cc9-a4e4-d1c72b286db0",
-        "https://cointelegraph.com/news/hsbc-ant-digital-test-ai-agent-payments-using-tokenized-deposits",
-        "https://decrypt.co/?p=380612",
-        "https://cointelegraph.com/news/ledger-investigates-fund-losses-linked-to-southeast-asian-reseller-warns-users",
-        "https://cointelegraph.com/news/scott-bessent-us-seize-crypto-iran-sanctions",
-        "https://cointelegraph.com/news/celsius-founder-alex-mashinsky-permanently-banned-from-crypto-industry-in-ny-settlement",
-        "2555b0d5-5f30-4722-8dca-4945684434a9",
-        "https://decrypt.co/?p=380619",
-        "4644feb9-2d5d-44bc-b91d-04c94021a384",
-        "https://cointelegraph.com/markets/bitcoin-consolidates-crypto-weathers-ledger-theft-reports",
-        "https://decrypt.co/?p=380599",
-        "https://cointelegraph.com/news/what-happened-in-crypto-today",
-        "27f930f1-35ad-4ef3-9db0-a971ea33020f",
-        "https://cointelegraph.com/news/blockchain-cftc-approval-derivatives-prediction-markets",
-        "https://decrypt.co/?p=380621",
-        "https://cointelegraph.com/news/thorchain-tether-freezing-usdt-addresses",
-        "f2c8c240-7326-4959-905c-b8fb3896c818",
-        "2ae93f2b-3de3-4b2f-842a-a5f511189661",
-        "39ffaa1a-584c-45f2-8c5e-0a7ceffe3536",
+        "5b66c6bb-e6a9-4b0f-b645-4d6e5b3171ee",
         "b239c4b1-3977-410f-8a9a-c590bfdb446f",
-        "a789ac80-84ae-4f33-a5ad-558a40deaad3",
-        "https://decrypt.co/?p=380585"
+        "39ffaa1a-584c-45f2-8c5e-0a7ceffe3536",
+        "d490ec0d-e8cb-4e21-9872-10e7615bfb3b",
+        "2ae93f2b-3de3-4b2f-842a-a5f511189661",
+        "3ad98db0-4f90-46a3-ad33-d7d38f95f379",
+        "eb73c451-b452-42ab-af11-68d1678322f7",
+        "4644feb9-2d5d-44bc-b91d-04c94021a384",
+        "bfb82842-fb65-4bbb-972a-6bffb9aa1d9a",
+        "a789ac80-84ae-4f33-a5ad-558a40deaad3"
     ],
     "last_crossed_alerts": {
         "ETH/USDT": [
@@ -36,12 +21,15 @@
             "Recent Low_109.17",
             "Recent Low_108.97",
             "Recent Low_108.88",
-            "Recent Low_108.77"
+            "Recent Low_108.77",
+            "Psychological 110_110"
         ],
         "PAXG/USDT": [
             4200.0,
             "Recent Low_4172.67",
-            "Recent Low_4180.41"
+            "Recent Low_4180.41",
+            "Recent High_4189.65",
+            "Recent Low_4181.49"
         ],
         "BTC/USDT": [
             82500.0,
