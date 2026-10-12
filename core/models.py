@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class RegimeData(BaseModel):
     regime: str = Field(default="NORMAL")
@@ -47,3 +47,5 @@ class SignalData(BaseModel):
     regime: str = "NORMAL"
     dispatch_channels: List[str] = Field(default_factory=list)
     trade_id: int = 0
+    reversal_notice: str = ""
+    liquidity_magnets: List[Dict[str, Any]] = Field(default_factory=list)

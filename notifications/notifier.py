@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,14 @@ class NotificationService:
         
         self.bot: Optional[Bot] = None
         self.dp = Dispatcher()
+        self.journal_manager: Any = None
         
+        self._register_handlers()
         if self.bot_token:
-            self.bot = Bot(token=self.bot_token)
-            self._register_handlers()
+            try:
+                self.bot = Bot(token=self.bot_token)
+            except Exception as e:
+                logger.warning(f"Could not initialize Telegram bot: {e}")
 
     def _register_handlers(self) -> None:
         """Register Telegram command handlers."""
@@ -36,6 +41,35 @@ class NotificationService:
         @self.dp.message(Command("ping"))
         async def ping_command(message: Message):
             await message.reply("Pong! Sentinel is online.")
+
+        @self.dp.message(Command("autopsy"))
+        async def autopsy_command(message: Message):
+            args = message.text.split() if message.text else []
+            if len(args) < 2:
+                await message.reply("⚠️ Usage: <code>/autopsy &lt;trade_id&gt;</code>\nExample: <code>/autopsy b53e4a35</code>", parse_mode="HTML")
+                return
+                
+            trade_id = args[1].strip()
+            if not self.journal_manager:
+                await message.reply("❌ Journal manager not initialized.", parse_mode="HTML")
+                return
+
+            autopsy = await self.journal_manager.get_trade_autopsy(trade_id)
+            if not autopsy:
+                await message.reply(f"❌ No autopsy report found for trade <code>{trade_id}</code> (Trade may still be pending or was not a loss).", parse_mode="HTML")
+                return
+
+            msg = (
+                f"🔬 <b>POST-TRADE AUTOPSY: {autopsy.get('symbol')}</b>\n"
+                f"Trade ID: <code>{trade_id}</code> | Direction: {autopsy.get('direction')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏷 <b>Failure Mode</b>: <code>{autopsy.get('failure_category')}</code>\n"
+                f"📉 <b>Loss Result</b>: {autopsy.get('net_pnl_pct', 0.0):.2f}%\n\n"
+                f"📋 <b>Forensic Summary</b>:\n{autopsy.get('summary')}\n\n"
+                f"🔍 <b>Key Culprit</b>:\n• {autopsy.get('key_culprit')}\n\n"
+                f"💡 <b>Actionable Lesson</b>:\n• {autopsy.get('actionable_lesson')}"
+            )
+            await message.reply(msg, parse_mode="HTML")
 
     async def start_polling(self) -> None:
         """Start the aiogram bot polling loop."""
@@ -66,15 +100,18 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error sending Discord message: {e}")
 
-    async def notify_signal(self, symbol: str, signal_data: Dict[str, Any], ai_response_text: str, current_drawdown: float = 0.0) -> None:
+    async def notify_signal(self, symbol: str, signal_data: Dict[str, Any], ai_response_text: Any, current_drawdown: float = 0.0) -> None:
         """Format and broadcast an evaluated trading signal."""
-        try:
-            ai_data = json.loads(ai_response_text)
-        except Exception as e:
-            logger.error(f"Failed to parse AI JSON response: {e}")
-            ai_data = {}
+        if isinstance(ai_response_text, dict):
+            ai_data = ai_response_text
+        else:
+            try:
+                ai_data = json.loads(ai_response_text)
+            except Exception as e:
+                logger.error(f"Failed to parse AI JSON response: {e}")
+                ai_data = {}
 
-        patterns_str = ", ".join(signal_data['patterns'])
+        patterns_str = ", ".join(signal_data.get('patterns', []))
         
         direction = signal_data.get('direction', 'Neutral')
         action_str = "LONG 🟢" if direction == "Bullish" else "SHORT 🔴" if direction == "Bearish" else "NEUTRAL ⚪"
@@ -87,7 +124,10 @@ class NotificationService:
         confidence = ai_data.get('final_confidence_rating', 0)
         news_summary = ai_data.get('strategy_analysis', 'N/A')
         
-        channels = signal_data.get('dispatch_channels', ["STANDARD"])
+        channels = signal_data.get('dispatch_channels', [])
+        if not channels:
+            channels = ["VIP"] if confidence >= settings.vip_confidence_threshold else ["STANDARD"]
+            
         regime = signal_data.get('regime', 'NORMAL')
         outcome = signal_data.get('outcome', '')
         
@@ -133,10 +173,34 @@ class NotificationService:
         rr_tp1 = round(tp1_pct / signal_data.get('sl_pct', 1.0), 1) if signal_data.get('sl_pct') else 0.0
         rr_tp2 = round(tp2_pct / signal_data.get('sl_pct', 1.0), 1) if signal_data.get('sl_pct') else 0.0
 
-        tier_badge = " | 👑 VIP TIER" if confidence >= 85 else ""
+        tier_badge = " | 👑 VIP TIER" if confidence >= settings.vip_confidence_threshold else " | 🔹 STANDARD TIER"
         ttl_mins_val = signal_data.get('ttl_mins', 1080)
         ttl_display = f"{ttl_mins_val // 60}h" if ttl_mins_val % 60 == 0 else f"{ttl_mins_val} mins"
+        
+        reversal_str = ""
+        reversal_notice = signal_data.get('reversal_notice', '')
+        if reversal_notice:
+            reversal_str = f"🔄 <b>BIAS FLIP / INVALIDATION NOTICE</b>\n{reversal_notice}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        magnet_str = ""
+        magnets = signal_data.get('liquidity_magnets', [])
+        if magnets:
+            magnet_lines = []
+            for m in magnets:
+                icon = "🟢" if m.get('side') == 'BID' else "🔴"
+                action_text = m.get('action')
+                if not action_text:
+                    role = "Target Pull" if (direction == 'Bullish' and m.get('side') == 'ASK') or (direction == 'Bearish' and m.get('side') == 'BID') else "Liquidity Wall / Sweep Pool"
+                    action_text = f"Monitor price reaction near ${m.get('price', 0.0)} ({role})."
+                magnet_lines.append(
+                    f"• {icon} <b>{m.get('volume_formatted', '')} {m.get('side', '')} Pool</b> at <b>${m.get('price', 0.0)}</b> "
+                    f"({m.get('distance_pct', 0.0):+.2f}% | {m.get('ratio', 1.0)}x depth)\n"
+                    f"  ↳ <b>Next Action:</b> <i>{action_text}</i>"
+                )
+            magnet_str = "\n\n🧲 <b>LIQUIDITY MAGNETS DETECTED & NEXT ACTIONS</b>:\n" + "\n".join(magnet_lines)
+
         msg = (
+            f"{reversal_str}"
             f"{tag_str}\n"
             f"{badge_str}"
             f"Action: {action_str} | Confidence: {confidence}%{tier_badge}\n"
@@ -150,6 +214,7 @@ class NotificationService:
             f"📰 Market Context:\n"
             f"• {news_summary}"
             f"{catalyst_str}"
+            f"{magnet_str}"
         )
         
         checklist = ai_data.get('scoring_checklist', [])

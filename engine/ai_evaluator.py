@@ -23,6 +23,12 @@ class SignalEvaluation(BaseModel):
     strategy_analysis: str = Field(description="Detailed explanation of the setup, institutional flow, and news sentiment.")
     audit_notes: List[str] = Field(description="Notes on why penalties were or were not applied.")
 
+class AutopsyReport(BaseModel):
+    failure_category: str = Field(description="Strictly one of: 'STOP_HUNT_SWEEP', 'MACRO_TREND_BREAK', 'SL_TOO_TIGHT', 'MOMENTUM_EXHAUSTION', 'UNEXPECTED_NEWS'.")
+    summary: str = Field(description="2-3 sentence executive breakdown of why the setup failed.")
+    key_culprit: str = Field(description="The primary microstructural or technical cause.")
+    actionable_lesson: str = Field(description="Specific adjustment for future trades with this pattern.")
+
 class AIEvaluatorService:
     """Evaluates trading signals using Google Gemini."""
     def __init__(self, api_key: str, timeout: float = 30.0):
@@ -87,6 +93,19 @@ class AIEvaluatorService:
             stackable_bonus += 5
             checklist.append("+5% Magnetic Liquidity Pools")
             
+        # Order Book Liquidity Magnet Target Pull
+        magnets = signal_data.get('liquidity_magnets', [])
+        current_close = float(signal_data.get('close', 0.0))
+        has_aligned_magnet = False
+        for m in magnets:
+            if direction == 'LONG' and m.get('side') == 'ASK' and m.get('price', 0) > current_close:
+                has_aligned_magnet = True
+            elif direction == 'SHORT' and m.get('side') == 'BID' and m.get('price', 0) < current_close:
+                has_aligned_magnet = True
+        if has_aligned_magnet and "+5% Magnetic Liquidity Pools" not in checklist:
+            stackable_bonus += 5
+            checklist.append("+5% Order Book Liquidity Magnet")
+            
         if oi_delta > 1.5 and oi_dir.lower() == direction.lower():
             stackable_bonus += 5
             checklist.append("+5% Open Interest Expansion")
@@ -111,6 +130,11 @@ class AIEvaluatorService:
             calculated_score -= 10
             checklist.append("-10% Degraded Pattern")
             
+        magnet_desc = "; ".join([
+            f"{m.get('volume_formatted', '')} {m.get('side', '')} @ ${m.get('price', 0)} ({m.get('action', 'No action specified')})" 
+            for m in magnets
+        ]) if magnets else "None detected"
+        
         # Ask AI for News and Wall Penalties
         prompt = f"""
 You are an Institutional Risk Auditor.
@@ -121,6 +145,7 @@ Current Price: {signal_data['close']}
 Technical Direction: {direction}
 Detected Patterns: {", ".join(patterns)}
 Microstructure Note: {signal_data.get('strategy_rationale', 'N/A')}
+Order Book Liquidity Magnets: {magnet_desc}
 
 Recent News:
 """
@@ -191,3 +216,63 @@ Provide JSON output adhering exactly to the schema.
         except Exception as e:
             logger.error(f"Error during AI evaluation: {e}")
             return None
+
+    async def generate_autopsy(
+        self, 
+        trade_summary: Dict[str, Any], 
+        sl_candle: Dict[str, Any], 
+        microstructure_at_exit: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send stopped-out trade metrics to Gemini for post-mortem forensic analysis."""
+        micro = microstructure_at_exit or {}
+        prompt = f"""
+You are an Institutional Lead Quantitative Risk Officer conducting a Post-Trade Autopsy on a stopped-out trade.
+
+### Trade Setup (Original Entry Thesis)
+- Symbol: {trade_summary.get('symbol')}
+- Direction: {trade_summary.get('direction')}
+- Entry Price: ${trade_summary.get('entry_price')}
+- Initial Stop Loss: ${trade_summary.get('sl_price')}
+- Pattern Traded: {trade_summary.get('pattern_name', 'Unknown')}
+- Leverage: {trade_summary.get('leverage', 1.0)}x
+
+### Exit Snapshot (The Exact Candle That Triggered the Stop Loss)
+- Exit Price: ${sl_candle.get('close')}
+- Breach Candle Range: Low: ${sl_candle.get('low')} – High: ${sl_candle.get('high')}
+- Exit Candle Open: ${sl_candle.get('open')} | Volume: {sl_candle.get('volume')}
+- Funding Rate at Exit: {micro.get('funding_rate', 0.0)}%
+- Order Book Imbalance at Exit: {micro.get('imbalance_ratio', 1.0)}
+- Realized Net Loss: {trade_summary.get('net_pnl_pct', 0.0):.2f}%
+
+Conduct a forensic analysis to determine:
+1. Did price wick through the stop loss and reverse (classic liquidity sweep), or break through with heavy continuation?
+2. Was the stop loss placed within high-frequency market noise?
+3. What is the single biggest lesson to protect capital on similar setups?
+
+Provide JSON output adhering strictly to the schema.
+"""
+        try:
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=AutopsyReport,
+                    ),
+                ),
+                timeout=self.timeout
+            )
+            raw = response.text or ""
+            text = raw.strip()
+            if text.startswith("```json"): text = text[7:]
+            res = json.loads(text.strip())
+            return dict(res) if isinstance(res, dict) else {}
+        except Exception as e:
+            logger.error(f"Error generating AI autopsy: {e}")
+            return {
+                "failure_category": "SL_TOO_TIGHT",
+                "summary": f"Trade stopped out due to adverse market volatility. (AI post-mortem note: {e})",
+                "key_culprit": "Price breached stop loss boundary before reaching profit target.",
+                "actionable_lesson": "Consider widening ATR buffer multiplier in higher volatility regimes."
+            }

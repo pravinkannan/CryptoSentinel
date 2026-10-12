@@ -1,0 +1,127 @@
+import asyncio
+import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
+from datetime import datetime, timezone, timedelta
+
+from core.config import settings
+from engine.journal_manager import JournalManager
+from execution.paper_trader import PaperTradingService
+from notifications.notifier import NotificationService
+
+
+def test_vip_confidence_threshold_configuration():
+    """Verify that settings default VIP confidence threshold is 90."""
+    assert settings.vip_confidence_threshold == 90
+
+
+def test_notification_tier_badges_and_channels():
+    """Verify that >= 90 is VIP TIER and < 90 is STANDARD TIER."""
+    async def run_test():
+        notifier = NotificationService(telegram_token="dummy", telegram_chat_id="dummy")
+        notifier.send_telegram = AsyncMock()
+
+        base_signal = {
+            'timeframe': '1h',
+            'entry': 83000.0,
+            'stop_loss': 82500.0,
+            'take_profit': 84000.0,
+            'sl_pct': 0.6,
+            'tp_pct': 1.2,
+            'recommended_leverage': '20x',
+            'ttl_mins': 720,
+            'expiration_time': '04:00 UTC'
+        }
+
+        # Case 1: 90% Confidence -> VIP
+        signal_vip = dict(base_signal)
+        ai_vip = {'trade_direction': 'Bullish', 'final_confidence_rating': 90, 'strategy_analysis': 'Test'}
+        await notifier.notify_signal('BTC/USDT', signal_vip, ai_vip, 0.0)
+        sent_vip = notifier.send_telegram.call_args[0][0]
+        assert "👑 VIP TIER" in sent_vip
+        assert "[👑 VIP EXCLUSIVE]" in sent_vip
+
+        # Case 2: 85% Confidence -> STANDARD
+        signal_std = dict(base_signal)
+        ai_std = {'trade_direction': 'Bullish', 'final_confidence_rating': 85, 'strategy_analysis': 'Test'}
+        await notifier.notify_signal('BTC/USDT', signal_std, ai_std, 0.0)
+        sent_std = notifier.send_telegram.call_args[0][0]
+        assert "🔹 STANDARD TIER" in sent_std
+        assert "[📈 STANDARD FEED]" in sent_std
+
+        # Case 3: 80% Confidence -> STANDARD
+        signal_std2 = dict(base_signal)
+        ai_std2 = {'trade_direction': 'Bearish', 'final_confidence_rating': 80, 'strategy_analysis': 'Test'}
+        await notifier.notify_signal('BTC/USDT', signal_std2, ai_std2, 0.0)
+        sent_std2 = notifier.send_telegram.call_args[0][0]
+        assert "🔹 STANDARD TIER" in sent_std2
+        assert "[📈 STANDARD FEED]" in sent_std2
+
+    asyncio.run(run_test())
+
+
+def test_notification_reversal_notice_rendering():
+    """Verify that reversal_notice is rendered prominently in the alert."""
+    async def run_test():
+        notifier = NotificationService(telegram_token="dummy", telegram_chat_id="dummy")
+        notifier.send_telegram = AsyncMock()
+
+        signal = {
+            'timeframe': '1h',
+            'entry': 83000.0,
+            'stop_loss': 82500.0,
+            'take_profit': 84000.0,
+            'sl_pct': 0.6,
+            'tp_pct': 1.2,
+            'recommended_leverage': '20x',
+            'ttl_mins': 720,
+            'expiration_time': '04:00 UTC',
+            'reversal_notice': '⚠️ PRIOR 1h SHORT SETUP INVALIDATED: Fresh 1h LONG structure shift detected.'
+        }
+        ai_data = {'trade_direction': 'Bullish', 'final_confidence_rating': 85, 'strategy_analysis': 'Reversal confirmed'}
+
+        await notifier.notify_signal('BTC/USDT', signal, ai_data, 0.0)
+        msg = notifier.send_telegram.call_args[0][0]
+        assert "🔄 <b>BIAS FLIP / INVALIDATION NOTICE</b>" in msg
+        assert "PRIOR 1h SHORT SETUP INVALIDATED" in msg
+        assert "Fresh 1h LONG structure shift detected" in msg
+
+    asyncio.run(run_test())
+
+
+def test_paper_trader_invalidation_by_reversal(tmp_path):
+    """Verify that paper trading forcefully closes opposing positions on reversal."""
+    async def run_test():
+        db_file = str(tmp_path / "test_sentinel.db")
+        journal = JournalManager(db_path=db_file)
+        await journal.ensure_db_exists()
+        paper_trader = PaperTradingService(db_path=db_file)
+
+        # 1. Log a SHORT trade that is pending
+        trade_id = await journal.log_trade({
+            'symbol': 'BTC/USDT',
+            'direction': 'SHORT',
+            'pattern_name': 'Bearish Engulfing',
+            'entry_price': 83000.0,
+            'sl_price': 83500.0,
+            'tp1_price': 82500.0,
+            'tp2_price': 82000.0,
+            'leverage': 20.0,
+            'confidence_score': 90
+        })
+
+        open_positions = await paper_trader.get_open_positions('BTC/USDT')
+        assert len(open_positions) == 1
+        assert open_positions[0]['direction'] == 'SHORT'
+
+        # 2. Force close on reversal
+        await paper_trader.close_position(
+            trade_id=str(trade_id),
+            exit_price=83050.0,
+            reason="INVALIDATED_BY_REVERSAL"
+        )
+
+        # 3. Position should now be closed
+        open_after = await paper_trader.get_open_positions('BTC/USDT')
+        assert len(open_after) == 0
+
+    asyncio.run(run_test())

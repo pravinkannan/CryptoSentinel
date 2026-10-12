@@ -5,7 +5,9 @@ PaperTradingService manages simulated futures positions via SQLite in the unifie
 import aiosqlite
 import logging
 import re
+import asyncio
 from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List
 from core.exceptions import DatabaseError
 from core.db import get_db_connection
 from core.config import settings
@@ -27,7 +29,7 @@ class PaperTradingService:
         # Trade logging is now entirely handled by JournalManager in sentinel.db
         pass
             
-    async def update_trades(self, symbol: str, df_5m, journal_manager=None, notifier=None) -> None:
+    async def update_trades(self, symbol: str, df_5m, journal_manager=None, notifier=None, ai_evaluator=None, market_data=None) -> None:
         """Check all pending trades for the given symbol against the current candle."""
         if df_5m is None or df_5m.empty: return
         candle = df_5m.iloc[-1]
@@ -136,9 +138,34 @@ class PaperTradingService:
                             gross_pnl_pct = pct_move * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
                         
-                        await conn.execute('UPDATE trades SET status = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
+                        await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (new_mae, new_mfe, trade_id))
                         logger.info(f"Paper trade closed: {trade_id} {symbol} -> {status} with Net PnL {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%) (MAE: {new_mae:.2f}%, MFE: {new_mfe:.2f}%)")
+
+                        # Trigger Post-Trade Forensic Autopsy on LOSS
+                        if status == 'LOSS' and journal_manager is not None and ai_evaluator is not None:
+                            try:
+                                trade_summary = {
+                                    'trade_id': str(trade_id),
+                                    'symbol': symbol,
+                                    'direction': direction,
+                                    'entry_price': entry,
+                                    'sl_price': sl,
+                                    'leverage': lev,
+                                    'net_pnl_pct': net_pnl_pct
+                                }
+                                sl_candle = {
+                                    'open': float(candle['open']),
+                                    'high': c_high,
+                                    'low': c_low,
+                                    'close': c_close,
+                                    'volume': float(candle['volume']) if 'volume' in candle else 0.0
+                                }
+                                asyncio.create_task(
+                                    self._trigger_autopsy(trade_summary, sl_candle, journal_manager, ai_evaluator, market_data, symbol)
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to initiate autopsy task for {trade_id}: {e}")
                         
                     else:
                         await conn.execute('UPDATE trades SET tp1_hit = ?, sl_price = ? WHERE trade_id = ?', (tp1_hit, sl, trade_id))
@@ -213,4 +240,25 @@ class PaperTradingService:
                     logger.info(f"Position {trade_id} forcefully closed at {exit_price} ({reason}). Net PnL: {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%)")
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
+
+    async def _trigger_autopsy(
+        self, 
+        trade_summary: Dict[str, Any], 
+        sl_candle: Dict[str, Any], 
+        journal_manager: Any, 
+        ai_evaluator: Any, 
+        market_data: Any, 
+        symbol: str
+    ) -> None:
+        """Asynchronously requests an AI autopsy and saves it to sentinel.db."""
+        try:
+            microstructure = {}
+            if market_data:
+                microstructure = await market_data.get_market_microstructure(symbol)
+            autopsy_report = await ai_evaluator.generate_autopsy(trade_summary, sl_candle, microstructure)
+            autopsy_data = {**trade_summary, **autopsy_report}
+            await journal_manager.save_autopsy(autopsy_data)
+            logger.info(f"Post-trade autopsy saved for trade {trade_summary['trade_id']}: {autopsy_report.get('failure_category')}")
+        except Exception as e:
+            logger.error(f"Error executing autopsy task for trade {trade_summary.get('trade_id')}: {e}")
 

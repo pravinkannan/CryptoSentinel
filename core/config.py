@@ -66,6 +66,10 @@ class Settings(BaseSettings):
 
     trade_ttl_hours: float = Field(default=18.0, description="Default trade expiration window / TTL in hours")
     trade_ttl_minutes: int = Field(default=1080, description="Default trade expiration window / TTL in minutes (18 hours = 1080m)")
+    vip_confidence_threshold: int = Field(default=90, description="Minimum confidence score for VIP tier classification")
+    min_dispatch_confidence: int = Field(default=80, description="Minimum confidence score required to dispatch a signal")
+    liquidity_magnet_depth_pct: float = Field(default=0.02, description="Top depth pct of order book to scan for liquidity magnets")
+    liquidity_magnet_multiplier: float = Field(default=3.0, description="Volume multiplier threshold for magnet cluster anomaly")
 
 settings = Settings()
 

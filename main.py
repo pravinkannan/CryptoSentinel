@@ -54,6 +54,7 @@ class CryptoSentinelApp:
             telegram_token=settings.telegram_bot_token,
             telegram_chat_id=settings.telegram_chat_id
         )
+        self.notifier.journal_manager = self.journal_manager
 
     async def initialize(self) -> None:
         """Initialize asynchronous state and resources."""
@@ -98,7 +99,9 @@ class CryptoSentinelApp:
             current_price_5m = df_5m['close'].iloc[-1] if not df_5m.empty else 0.0
             if current_price_5m > 0:
                 # Update Paper Trades once per symbol (optimization to prevent multi-timeframe redundant DB calls)
-                await self.paper_trader.update_trades(symbol, df_5m, self.journal_manager, self.notifier)
+                await self.paper_trader.update_trades(
+                    symbol, df_5m, self.journal_manager, self.notifier, self.ai_evaluator, self.market_data
+                )
 
             for tf in settings.timeframes:
                 logger.info(f"Analyzing {symbol} on {tf}... Regime: {regime_data['regime']}")
@@ -138,7 +141,7 @@ class CryptoSentinelApp:
                                 verdict = ai_data.get('overall_verdict', 'SKIP').upper()
                                 is_degraded = ai_data.get('is_degraded', False)
                                 
-                                status = "DISPATCH" if (direction in ['LONG', 'SHORT'] and confidence >= 75 and "SKIP" not in verdict and "REJECT" not in verdict) else "REJECT"
+                                status = "DISPATCH" if (direction in ['LONG', 'SHORT'] and confidence >= settings.min_dispatch_confidence and "SKIP" not in verdict and "REJECT" not in verdict) else "REJECT"
                                 logger.info(f"Evaluated: {symbol} {tf} | Score: {confidence}% | Status: {status}")
                                 
                                 if status == "DISPATCH":
@@ -151,30 +154,111 @@ class CryptoSentinelApp:
                                         logger.info(f"Trade filtered out due to funding rate: {fr}%")
                                         continue
 
-                                    # Smart Override Logic
+                                    # Multi-Timeframe Conflict & Bias Flip Resolution
                                     now = datetime.now(timezone.utc)
                                     signal_key = f"{symbol}_{tf}"
                                     active_signals = self.state_manager.state.setdefault("active_signals", {})
+                                    TF_RANKS = {'5m': 1, '15m': 2, '1h': 3, '4h': 4}
+                                    curr_rank = TF_RANKS.get(tf, 2)
                                     
-                                    if signal_key in active_signals:
-                                        last_sig = active_signals[signal_key]
-                                        last_time = datetime.fromisoformat(last_sig['timestamp'])
-                                        if now - last_time < timedelta(minutes=60):
-                                            if confidence <= last_sig['confidence']:
-                                                logger.info(f"Trade filtered out: A better or equal signal ({last_sig['confidence']}%) is already active for {signal_key}.")
+                                    skip_dispatch = False
+                                    opposing_to_invalidate = []
+                                    
+                                    for k, sig in list(active_signals.items()):
+                                        if not k.startswith(f"{symbol}_"):
+                                            continue
+                                        try:
+                                            sig_time = datetime.fromisoformat(sig['timestamp'])
+                                            sig_ttl = sig.get('ttl_mins', settings.trade_ttl_minutes)
+                                            if (now - sig_time).total_seconds() > sig_ttl * 60:
+                                                del active_signals[k]
                                                 continue
+                                        except Exception:
+                                            continue
+                                            
+                                        sig_dir = sig.get('direction', '')
+                                        sig_tf = sig.get('timeframe', k.split('_')[-1])
+                                        sig_rank = TF_RANKS.get(sig_tf, 2)
+                                        
+                                        # Check for conflicting direction across timeframes
+                                        if sig_dir and sig_dir != direction:
+                                            if curr_rank < sig_rank:
+                                                # Lower timeframe opposes an active higher timeframe trade!
+                                                if confidence < settings.vip_confidence_threshold:
+                                                    logger.info(
+                                                        f"Counter-trend setup filtered: {symbol} {tf} {direction} ({confidence}%) "
+                                                        f"opposes active higher-timeframe {sig_tf} {sig_dir} ({sig.get('confidence', 0)}%)."
+                                                    )
+                                                    skip_dispatch = True
+                                                    break
+                                                else:
+                                                    signal_data['reversal_notice'] = (
+                                                        f"⚡ <b>COUNTER-TREND SCALP</b>: Opposes active {sig_tf} {sig_dir}. "
+                                                        f"Use strict stop loss and tighter profit targets."
+                                                    )
                                             else:
-                                                # New signal has higher confidence
-                                                override_msg = f"🚨 OVERRIDE: Better setup detected ({confidence}% vs previous {last_sig['confidence']}%). Use this instead of the previous signal."
-                                                logger.info(override_msg)
-                                                if 'strategy_rationale' in signal_data:
-                                                    signal_data['strategy_rationale'] = f"{override_msg}\n\n{signal_data['strategy_rationale']}"
-                                    
+                                                # Equal or higher timeframe reversal -> Confirmed Market Structure Shift!
+                                                opposing_to_invalidate.append((k, sig_tf, sig_dir))
+                                        elif k == signal_key:
+                                            # Same symbol, same timeframe, same direction
+                                            sig_time = datetime.fromisoformat(sig['timestamp'])
+                                            if now - sig_time < timedelta(minutes=60):
+                                                if confidence <= sig.get('confidence', 0):
+                                                    logger.info(f"Trade filtered out: A better or equal signal ({sig.get('confidence')}%) is already active for {signal_key}.")
+                                                    skip_dispatch = True
+                                                    break
+                                                else:
+                                                    override_msg = f"🚨 OVERRIDE: Better setup detected ({confidence}% vs previous {sig.get('confidence')}%). Use this instead of the previous signal."
+                                                    logger.info(override_msg)
+                                                    if 'strategy_rationale' in signal_data:
+                                                        signal_data['strategy_rationale'] = f"{override_msg}\n\n{signal_data['strategy_rationale']}"
+
+                                    if skip_dispatch:
+                                        continue
+
+                                    # Invalidate opposing active signals & open paper trades
+                                    if opposing_to_invalidate:
+                                        inval_labels = []
+                                        for opp_k, opp_tf, opp_dir in opposing_to_invalidate:
+                                            if opp_k in active_signals:
+                                                del active_signals[opp_k]
+                                            inval_labels.append(f"{opp_tf} {opp_dir}")
+                                            
+                                        # Forcefully close opposing paper positions at current entry price
+                                        open_positions = await self.paper_trader.get_open_positions(symbol)
+                                        for pos in open_positions:
+                                            if pos['direction'] != direction:
+                                                logger.warning(
+                                                    f"Force-closing opposing paper trade {pos['id']} ({pos['direction']}) "
+                                                    f"due to {symbol} bias flip to {direction}"
+                                                )
+                                                await self.paper_trader.close_position(
+                                                    trade_id=str(pos['id']),
+                                                    exit_price=signal_data['entry'],
+                                                    reason="INVALIDATED_BY_REVERSAL"
+                                                )
+                                                
+                                        inval_summary = ", ".join(inval_labels)
+                                        reversal_msg = (
+                                            f"⚠️ <b>PRIOR {inval_summary} SETUP INVALIDATED</b>: Fresh {tf} {direction} structure shift detected.\n"
+                                            f"🛑 <b>ACTION REQUIRED</b>: Close/exit prior opposing positions before entering this {direction} trade!"
+                                        )
+                                        signal_data['reversal_notice'] = reversal_msg
+                                        logger.info(f"Bias Flip Alert generated for {symbol}: {inval_summary} -> {direction}")
+
+                                    # Channel tagging based on VIP threshold
+                                    if confidence >= settings.vip_confidence_threshold:
+                                        signal_data['dispatch_channels'] = ["VIP"]
+                                    else:
+                                        signal_data['dispatch_channels'] = ["STANDARD"]
+
                                     # Update Active Signals State
                                     active_signals[signal_key] = {
                                         'direction': direction,
                                         'confidence': confidence,
-                                        'timestamp': now.isoformat()
+                                        'timestamp': now.isoformat(),
+                                        'timeframe': tf,
+                                        'ttl_mins': signal_data.get('ttl_mins', settings.trade_ttl_minutes)
                                     }
 
                                     # Log to Journal Manager (which now uses sentinel.db unified table)

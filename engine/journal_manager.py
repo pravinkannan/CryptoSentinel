@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any, List
 from core.config import settings
 from core.db import get_db_connection
 
@@ -28,11 +29,16 @@ class JournalManager:
                     tp2_hit INTEGER DEFAULT 0,
                     trailing_sl REAL,
                     status TEXT,
+                    exit_price REAL,
                     pnl_pct REAL,
                     net_pnl_pct REAL DEFAULT 0.0,
                     gross_pnl_pct REAL DEFAULT 0.0
                 )
             ''')
+            try:
+                await conn.execute('ALTER TABLE trades ADD COLUMN exit_price REAL DEFAULT 0.0')
+            except Exception:
+                pass
             try:
                 await conn.execute('ALTER TABLE trades ADD COLUMN net_pnl_pct REAL DEFAULT 0.0')
                 await conn.execute('ALTER TABLE trades ADD COLUMN gross_pnl_pct REAL DEFAULT 0.0')
@@ -53,6 +59,20 @@ class JournalManager:
                     regime_state TEXT,
                     mae_pct REAL DEFAULT 0.0,
                     mfe_pct REAL DEFAULT 0.0,
+                    FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
+                )
+            ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS trade_autopsies (
+                    trade_id TEXT PRIMARY KEY,
+                    symbol TEXT,
+                    direction TEXT,
+                    failure_category TEXT,
+                    summary TEXT,
+                    key_culprit TEXT,
+                    actionable_lesson TEXT,
+                    timestamp TEXT,
+                    net_pnl_pct REAL DEFAULT 0.0,
                     FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
                 )
             ''')
@@ -183,3 +203,48 @@ class JournalManager:
             drifts[pattern] = await self.check_pattern_drift(pattern)
             
         return drifts
+
+    async def save_autopsy(self, autopsy_data: Dict[str, Any]) -> None:
+        """Saves a post-mortem autopsy for a failed trade into sentinel.db."""
+        async with get_db_connection(self.db_path) as conn:
+            await conn.execute('''
+                INSERT OR REPLACE INTO trade_autopsies (
+                    trade_id, symbol, direction, failure_category,
+                    summary, key_culprit, actionable_lesson, timestamp, net_pnl_pct
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                str(autopsy_data.get('trade_id', '')),
+                str(autopsy_data.get('symbol', '')),
+                str(autopsy_data.get('direction', '')),
+                str(autopsy_data.get('failure_category', 'UNKNOWN')),
+                str(autopsy_data.get('summary', '')),
+                str(autopsy_data.get('key_culprit', '')),
+                str(autopsy_data.get('actionable_lesson', '')),
+                str(autopsy_data.get('timestamp', datetime.now(timezone.utc).isoformat())),
+                float(autopsy_data.get('net_pnl_pct', 0.0))
+            ))
+            await conn.commit()
+
+    async def get_trade_autopsy(self, trade_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves autopsy post-mortem data for a given trade_id."""
+        async with get_db_connection(self.db_path) as conn:
+            cursor = await conn.execute('''
+                SELECT trade_id, symbol, direction, failure_category,
+                       summary, key_culprit, actionable_lesson, timestamp, net_pnl_pct
+                FROM trade_autopsies
+                WHERE trade_id = ?
+            ''', (str(trade_id),))
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    'trade_id': row[0],
+                    'symbol': row[1],
+                    'direction': row[2],
+                    'failure_category': row[3],
+                    'summary': row[4],
+                    'key_culprit': row[5],
+                    'actionable_lesson': row[6],
+                    'timestamp': row[7],
+                    'net_pnl_pct': row[8]
+                }
+            return None

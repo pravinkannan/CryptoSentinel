@@ -11,6 +11,7 @@ from core.config import settings
 from core.models import SignalData
 from engine.pattern_recognition import PatternRecognitionService
 from engine.risk_manager import RiskManager
+from data.market_data_service import scan_liquidity_magnets, enrich_magnets_with_actions
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ class SignalGeneratorService:
         except Exception:
             pass
 
-    def analyze_patterns(self, df: pd.DataFrame, timeframe: str, htf_trend: str, htf_4h_trend: str, microstructure: Dict[str, float], symbol: str, btc_trend: str = "Unknown", regime_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    def analyze_patterns(self, df: pd.DataFrame, timeframe: str, htf_trend: str, htf_4h_trend: str, microstructure: Dict[str, Any], symbol: str, btc_trend: str = "Unknown", regime_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Run complete TA logic on a dataframe and return a structured signal payload."""
         if df is None or len(df) < 50:
             return None
@@ -146,10 +147,29 @@ class SignalGeneratorService:
         if imbalance > 1.5: rationale.append(f"OB shows strong buy imbalance ({imbalance:.2f}).")
         elif imbalance < 0.66: rationale.append(f"OB shows strong sell imbalance ({imbalance:.2f}).")
 
+        # Scan for anomalous Liquidity Magnets in the order book
+        order_book = microstructure.get('order_book', {})
+        liquidity_magnets = scan_liquidity_magnets(
+            order_book, 
+            entry, 
+            depth_pct=settings.liquidity_magnet_depth_pct, 
+            multiplier=settings.liquidity_magnet_multiplier
+        )
         # 3. Risk Management & Exits (Decoupled)
         risk_params = self.risk_manager.compute_risk_parameters(df, symbol, timeframe, direction, entry, regime)
         if not risk_params:
             return None
+
+        # Enrich magnets with concrete tactical actions
+        liquidity_magnets = enrich_magnets_with_actions(
+            liquidity_magnets,
+            direction=direction,
+            entry=entry,
+            stop_loss=risk_params['stop_loss'],
+            take_profit=risk_params['tp1']
+        )
+        for m in liquidity_magnets:
+            rationale.append(f"Liquidity magnet: {m['volume_formatted']} {m['side']} @ ${m['price']} -> {m.get('action')}")
             
         liq_zones = self.risk_manager.calculate_liquidation_zones(df)
 
@@ -212,5 +232,6 @@ class SignalGeneratorService:
             regime=regime,
             catalyst_info=regime_data.get('catalyst_info', '') if regime_data else '',
             oi_delta_pct=round(oi_delta_pct, 2),
-            oi_direction=oi_direction
+            oi_direction=oi_direction,
+            liquidity_magnets=liquidity_magnets
         ).model_dump()
