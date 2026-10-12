@@ -236,3 +236,55 @@ def test_funding_rate_filter_matrix(direction, funding_rate, confidence, should_
         is_filtered = True
 
     assert is_filtered == should_filter
+
+
+# =========================================================================
+# 4. Process Supervision & Telegram Network Resilience
+# =========================================================================
+
+def test_supervised_task_absorbs_exceptions():
+    """
+    Verify that _supervised_task traps unexpected exceptions from subtasks,
+    preventing asyncio.gather from crashing the core trading loop.
+    """
+    async def run_test():
+        from main import _supervised_task
+        
+        async def failing_worker():
+            raise ConnectionResetError("Simulated network drop [WinError 64]")
+
+        # Must complete cleanly without raising exception
+        await _supervised_task(failing_worker(), "Test Failing Worker")
+
+    asyncio.run(run_test())
+
+
+def test_telegram_polling_reconnection_on_network_error():
+    """
+    Verify that start_polling handles TelegramNetworkError and retries
+    with backoff without crashing the application.
+    """
+    async def run_test():
+        from notifications.notifier import NotificationService
+        from aiogram.exceptions import TelegramNetworkError
+
+        notifier = NotificationService(telegram_token="123456:ABC-DEF", telegram_chat_id="123456")
+        notifier.bot = MagicMock()
+        
+        # Simulate: first call raises TelegramNetworkError, second call cancels to exit loop
+        call_count = 0
+        async def mock_start_polling(bot, handle_signals=False):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise TelegramNetworkError(method="getMe", message="ClientConnectorError: Cannot connect to host")
+            raise asyncio.CancelledError()
+
+        notifier.dp.start_polling = mock_start_polling
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await notifier.start_polling()
+
+        assert call_count == 2
+
+    asyncio.run(run_test())

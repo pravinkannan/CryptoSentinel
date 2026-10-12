@@ -4,11 +4,13 @@ NotificationService manages Telegram and Discord alerts.
 
 import logging
 import json
+import asyncio
 import aiohttp
 from typing import Dict, Any, Optional
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramNetworkError
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -72,10 +74,31 @@ class NotificationService:
             await message.reply(msg, parse_mode="HTML")
 
     async def start_polling(self) -> None:
-        """Start the aiogram bot polling loop."""
-        if self.bot:
-            logger.info("Starting Telegram Bot polling...")
-            await self.dp.start_polling(self.bot)
+        """Start the aiogram bot polling loop with automatic reconnection on network drops."""
+        if not self.bot:
+            return
+        logger.info("Starting Telegram Bot polling...")
+        retry_delay = 5
+        while True:
+            try:
+                await self.dp.start_polling(self.bot, handle_signals=False)
+                break
+            except asyncio.CancelledError:
+                logger.info("Telegram Bot polling stopped.")
+                break
+            except (TelegramNetworkError, aiohttp.ClientError, OSError) as e:
+                logger.warning(
+                    f"Telegram network connection lost ({e}). Reconnecting in {retry_delay}s..."
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error in Telegram polling: {e}. Retrying in {retry_delay}s...",
+                    exc_info=True
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
 
     async def send_telegram(self, text: str, parse_mode: str = 'HTML') -> None:
         """Send a message to the configured Telegram chat."""

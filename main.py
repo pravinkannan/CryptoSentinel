@@ -367,17 +367,26 @@ class CryptoSentinelApp:
             if self.notifier.bot and self.notifier.bot.session:
                 await self.notifier.bot.session.close()
 
+async def _supervised_task(coro, task_name: str) -> None:
+    """Supervises a background task to isolate failures from the main execution loop."""
+    try:
+        await coro
+    except asyncio.CancelledError:
+        logger.info(f"{task_name} cancelled.")
+    except Exception as e:
+        logger.error(f"Unhandled error in {task_name}: {e}", exc_info=True)
+
 async def main():
     logger.info("Starting Advanced Crypto Sentinel (Refactored)...")
     app = CryptoSentinelApp()
     await app.initialize()
     
     tasks = [
-        asyncio.create_task(app.run_loop()),
-        asyncio.create_task(app.calendar_guard.start_sync_task())
+        asyncio.create_task(_supervised_task(app.run_loop(), "Trading Watcher Loop")),
+        asyncio.create_task(_supervised_task(app.calendar_guard.start_sync_task(), "Calendar Sync Task"))
     ]
     if app.notifier.bot:
-        tasks.append(asyncio.create_task(app.notifier.start_polling()))
+        tasks.append(asyncio.create_task(_supervised_task(app.notifier.start_polling(), "Telegram Bot Polling")))
         
     try:
         await asyncio.gather(*tasks)
