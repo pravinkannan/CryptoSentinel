@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class StateManager:
     """Manages reading and writing application state to a local JSON file."""
-    def __init__(self, filename: str = "sentinel_state.json"):
+    def __init__(self, filename: str = "sentinel_state.json") -> None:
         self.filename = filename
         self.state: Dict[str, Any] = {
             "seen_guids": [],

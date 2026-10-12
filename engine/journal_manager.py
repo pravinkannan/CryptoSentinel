@@ -8,10 +8,10 @@ from core.config import settings
 from core.db import get_db_connection
 
 class JournalManager:
-    def __init__(self, db_path="data/sentinel.db"):
+    def __init__(self, db_path: str = "data/sentinel.db") -> None:
         self.db_path = db_path
 
-    async def ensure_db_exists(self):
+    async def ensure_db_exists(self) -> None:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         async with get_db_connection(self.db_path) as conn:
             await conn.execute('''
@@ -78,7 +78,7 @@ class JournalManager:
             ''')
             await conn.commit()
 
-    async def log_trade(self, trade_data):
+    async def log_trade(self, trade_data: Dict[str, Any]) -> str:
         """
         Logs a trade into the unified sentinel.db.
         Returns trade_id.
@@ -130,7 +130,15 @@ class JournalManager:
             await conn.commit()
             return trade_id
 
-    async def update_trade_outcome(self, trade_id, outcome, pnl_pct, mae_pct, mfe_pct, duration_minutes=0.0):
+    async def update_trade_outcome(
+        self,
+        trade_id: str,
+        outcome: str,
+        pnl_pct: float,
+        mae_pct: float,
+        mfe_pct: float,
+        duration_minutes: float = 0.0
+    ) -> None:
         """
         Updates an existing trade with its final outcome and metrics.
         """
@@ -164,7 +172,7 @@ class JournalManager:
                 ORDER BY t.timestamp DESC
                 LIMIT ?
             ''', (pattern_name, eval_limit))
-            results = await cursor.fetchall()
+            results = list(await cursor.fetchall())
 
         if not results or len(results) < 5:
             return 1.0 # Default to 100% if no history or insufficient sample size
@@ -188,7 +196,7 @@ class JournalManager:
         
         return 'HEALTHY'
 
-    async def get_all_pattern_drifts(self):
+    async def get_all_pattern_drifts(self) -> Dict[str, str]:
         """
         Returns a dictionary of pattern_name: drift_status for all tracked patterns.
         """

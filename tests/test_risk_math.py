@@ -4,7 +4,7 @@ from typing import Dict, List
 from engine.signal_generator import SignalGeneratorService
 
 @pytest.fixture
-def signal_generator():
+def signal_generator() -> SignalGeneratorService:
     static_alerts: Dict[str, List[float]] = {}
     return SignalGeneratorService(
         percentage_trigger=0.5,
@@ -14,7 +14,7 @@ def signal_generator():
         target_rr_ratio=2.5
     )
 
-def test_risk_metrics_bullish(signal_generator):
+def test_risk_metrics_bullish(signal_generator: SignalGeneratorService) -> None:
     # Mock dataframe with recent low and entry
     df = pd.DataFrame({
         'timestamp': pd.date_range('2023-01-01', periods=20, freq='h'),
@@ -56,7 +56,7 @@ def test_risk_metrics_bullish(signal_generator):
     assert tp_pct == 32.5
     assert rr_ratio == 2.5
     
-def test_risk_metrics_bearish(signal_generator):
+def test_risk_metrics_bearish(signal_generator: SignalGeneratorService) -> None:
     df = pd.DataFrame({
         'timestamp': pd.date_range('2023-01-01', periods=20, freq='h'),
         'open': [100.0] * 20,

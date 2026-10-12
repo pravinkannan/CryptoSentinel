@@ -4,7 +4,15 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 .env
-data/sentinel.db
+data/sentinel.db*
 *.db
+*.sqlite
+*.sqlite3
 *.log
+sentinel_state.json
+.DS_Store
+Thumbs.db
+

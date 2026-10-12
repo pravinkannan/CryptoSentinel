@@ -1,20 +1,20 @@
 import logging
 import aiohttp
 import asyncio
+from typing import List, Optional, Tuple
 from datetime import datetime, timezone, timedelta
-from typing import List
 
 logger = logging.getLogger(__name__)
 
 class CalendarGuard:
-    def __init__(self):
+    def __init__(self) -> None:
         self.high_impact_events: List[datetime] = []
-        self.pre_buffer_mins = 30
-        self.post_buffer_mins = 15
-        self.last_pause_notification = None
-        self.last_sync_time = None
+        self.pre_buffer_mins: int = 30
+        self.post_buffer_mins: int = 15
+        self.last_pause_notification: Optional[datetime] = None
+        self.last_sync_time: Optional[datetime] = None
 
-    async def sync_calendar(self):
+    async def sync_calendar(self) -> None:
         """Fetches the economic calendar and filters for high-impact USD events."""
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         try:
@@ -46,7 +46,7 @@ class CalendarGuard:
         except Exception as e:
             logger.error(f"Error syncing economic calendar: {e}")
 
-    async def start_sync_task(self):
+    async def start_sync_task(self) -> None:
         """Runs daily at 00:01 UTC to sync calendar."""
         while True:
             now = datetime.now(timezone.utc)
