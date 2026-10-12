@@ -21,13 +21,13 @@ class PortfolioManager:
                 lev_str = str(position.get('leverage', '1'))
                 try:
                     leverage = float(lev_str.replace('x', ''))
-                except:
+                except (ValueError, TypeError):
                     leverage = 1.0
                 
                 pnl_pct = position.get('pnl_pct', 0.0)
                 
-                # If leverage > 10x and position is in profit
-                if leverage > 10 and pnl_pct > 0.0:
+                # If leverage >= threshold and position is in profit >= threshold
+                if leverage >= settings.emergency_guard_leverage_threshold and pnl_pct >= settings.emergency_guard_pnl_threshold:
                     old_sl = position['stop_loss']
                     entry_price = position['entry']
                     direction = position.get('direction', 'LONG').upper()

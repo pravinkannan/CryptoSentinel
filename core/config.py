@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     """
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
-    gemini_api_key: str = Field(..., description="Google Gemini API Key")
-    telegram_bot_token: str = Field(..., description="Telegram Bot Token")
-    telegram_chat_id: str = Field(..., description="Telegram Chat ID")
+    gemini_api_key: str = Field(default="", description="Google Gemini API Key")
+    telegram_bot_token: str = Field(default="", description="Telegram Bot Token")
+    telegram_chat_id: str = Field(default="", description="Telegram Chat ID")
     cryptopanic_api_key: str = Field(default="", description="CryptoPanic API Key")
     discord_webhook_url: str = Field(default="", description="Discord Webhook URL")
 
@@ -63,7 +63,10 @@ class Settings(BaseSettings):
     
     pattern_drift_win_rate_threshold: float = Field(default=40.0, description="Win rate under which pattern is degraded")
     pattern_drift_evaluation_window: int = Field(default=20, description="Number of past trades to evaluate pattern drift")
-    
+
+    trade_ttl_hours: float = Field(default=18.0, description="Default trade expiration window / TTL in hours")
+    trade_ttl_minutes: int = Field(default=1080, description="Default trade expiration window / TTL in minutes (18 hours = 1080m)")
+
 settings = Settings()
 
 # Setup root logging

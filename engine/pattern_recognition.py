@@ -1,6 +1,6 @@
 import logging
 import pandas as pd
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +10,7 @@ class PatternRecognitionService:
     def __init__(self, percentage_trigger: float):
         self.percentage_trigger = percentage_trigger
 
-    def detect_patterns(self, df: pd.DataFrame, regime_data: dict = None) -> Tuple[List[str], List[str], str, float, str]:
+    def detect_patterns(self, df: pd.DataFrame, regime_data: Optional[Dict[str, Any]] = None) -> Tuple[List[str], List[str], str, float, str]:
         """
         Detect candlestick patterns, momentum signals, and divergences.
         Returns: (signals, rationale, direction, oi_delta_pct, oi_direction)

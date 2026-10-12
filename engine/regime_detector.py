@@ -34,7 +34,7 @@ class RegimeDetector:
         catalyst_info = ""
 
         # Check for FAST EXIT (Hysteresis / Consolidation)
-        if state["phase"] != "NORMAL":
+        if state["phase"] != "NORMAL" and 'high' in df_5m.columns and 'low' in df_5m.columns:
             last_3 = df_5m.tail(3)
             # Check tight range < 0.4%
             ranges = (last_3['high'] - last_3['low']) / last_3['low'] * 100

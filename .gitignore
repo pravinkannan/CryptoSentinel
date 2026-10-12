@@ -1,8 +1,10 @@
-﻿
 __pycache__/
-*.pyc
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
 .env
 data/sentinel.db
-data_storage/trading_records.db
 *.db
-
+*.log

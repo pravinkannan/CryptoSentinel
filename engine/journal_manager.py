@@ -2,7 +2,7 @@ import aiosqlite
 import os
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from core.config import settings
 from core.db import get_db_connection
 
@@ -38,6 +38,10 @@ class JournalManager:
                 await conn.execute('ALTER TABLE trades ADD COLUMN gross_pnl_pct REAL DEFAULT 0.0')
             except Exception:
                 pass
+            try:
+                await conn.execute(f'ALTER TABLE trades ADD COLUMN ttl_mins INTEGER DEFAULT {settings.trade_ttl_minutes}')
+            except Exception:
+                pass
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS evaluations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,11 +71,11 @@ class JournalManager:
                 INSERT INTO trades (
                     trade_id, timestamp, symbol, direction, 
                     entry_price, sl_price, tp1_price, tp2_price, 
-                    leverage, trailing_sl, status, pnl_pct
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    leverage, trailing_sl, status, pnl_pct, ttl_mins
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 trade_id,
-                trade_data.get('timestamp', datetime.utcnow().isoformat()),
+                trade_data.get('timestamp', datetime.now(timezone.utc).isoformat()),
                 trade_data.get('symbol'),
                 trade_data.get('direction'),
                 trade_data.get('entry_price'),
@@ -81,7 +85,8 @@ class JournalManager:
                 trade_data.get('leverage'),
                 trade_data.get('sl_price'), # initial trailing_sl is sl_price
                 trade_data.get('outcome', 'PENDING'),
-                trade_data.get('pnl_pct', 0.0)
+                trade_data.get('pnl_pct', 0.0),
+                trade_data.get('ttl_mins', settings.trade_ttl_minutes)
             ))
             
             # Insert into evaluations
@@ -124,11 +129,12 @@ class JournalManager:
             
             await conn.commit()
 
-    async def get_pattern_win_rate(self, pattern_name, limit=20):
+    async def get_pattern_win_rate(self, pattern_name: str, limit: int = 0) -> float:
         """
         Calculates the win rate for a specific pattern over the last N trades.
         Win is considered WIN_TP1 or WIN_TP2.
         """
+        eval_limit = limit if limit > 0 else settings.pattern_drift_evaluation_window
         async with get_db_connection(self.db_path) as conn:
             cursor = await conn.execute('''
                 SELECT t.status 
@@ -137,26 +143,27 @@ class JournalManager:
                 WHERE e.pattern_name = ? AND t.status IN ('WIN_TP1', 'WIN_TP2', 'LOSS', 'BE')
                 ORDER BY t.timestamp DESC
                 LIMIT ?
-            ''', (pattern_name, limit))
+            ''', (pattern_name, eval_limit))
             results = await cursor.fetchall()
 
-        if not results:
-            return 1.0 # Default to 100% if no history
+        if not results or len(results) < 5:
+            return 1.0 # Default to 100% if no history or insufficient sample size
 
         total_trades = len(results)
         wins = sum(1 for r in results if r[0] in ('WIN_TP1', 'WIN_TP2'))
         
         return wins / total_trades
 
-    async def check_pattern_drift(self, pattern_name):
+    async def check_pattern_drift(self, pattern_name: str) -> str:
         """
         Pattern Drift Guard:
-        Returns 'DEGRADED' if the pattern's rolling 20-trade win rate < 40%.
-        Returns 'HEALTHY' if >= 50% or if not enough data to confidently degrade.
+        Returns 'DEGRADED' if the pattern's rolling win rate < threshold.
+        Returns 'HEALTHY' if >= threshold or if not enough data to confidently degrade.
         """
-        win_rate = await self.get_pattern_win_rate(pattern_name, limit=20)
+        win_rate = await self.get_pattern_win_rate(pattern_name, limit=settings.pattern_drift_evaluation_window)
+        threshold = settings.pattern_drift_win_rate_threshold / 100.0
         
-        if win_rate < 0.40:
+        if win_rate < threshold:
             return 'DEGRADED'
         
         return 'HEALTHY'

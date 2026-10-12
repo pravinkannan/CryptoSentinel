@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class NotificationService:
     """Handles external notifications for signals and static levels."""
     
-    def __init__(self, telegram_token: str, telegram_chat_id: str, discord_webhook: str):
+    def __init__(self, telegram_token: str, telegram_chat_id: str, discord_webhook: str = ""):
         self.bot_token = telegram_token
         self.chat_id = telegram_chat_id
         self.discord_webhook = discord_webhook
@@ -133,14 +133,17 @@ class NotificationService:
         rr_tp1 = round(tp1_pct / signal_data.get('sl_pct', 1.0), 1) if signal_data.get('sl_pct') else 0.0
         rr_tp2 = round(tp2_pct / signal_data.get('sl_pct', 1.0), 1) if signal_data.get('sl_pct') else 0.0
 
+        tier_badge = " | 👑 VIP TIER" if confidence >= 85 else ""
+        ttl_mins_val = signal_data.get('ttl_mins', 1080)
+        ttl_display = f"{ttl_mins_val // 60}h" if ttl_mins_val % 60 == 0 else f"{ttl_mins_val} mins"
         msg = (
             f"{tag_str}\n"
             f"{badge_str}"
-            f"Action: {action_str} | Confidence: {confidence}%\n"
+            f"Action: {action_str} | Confidence: {confidence}%{tier_badge}\n"
             f"Recommended Leverage: {signal_data.get('recommended_leverage', '1x')}\n"
             f"Entry: ${entry_min} – ${entry_max}\n"
-            f"Stop Loss: ${signal_data.get('stop_loss', 0.0)} (Risk: -{signal_data.get('sl_pct', 0.0)}% | ROE: -{signal_data.get('roe_sl', 0.0)}%)\n"
-            f"⏳ Setup Valid For: {signal_data.get('ttl_mins', 60)} mins (Expires ~{signal_data.get('expiration_time', 'N/A')} UTC)\n\n"
+            f"Stop Loss: ${signal_data.get('stop_loss', 0.0)} (Risk: <b>-{signal_data.get('sl_pct', 0.0)}%</b> | ROE: -{signal_data.get('roe_sl', 0.0)}%)\n"
+            f"⏳ Setup Valid For: {ttl_display} ({ttl_mins_val} mins) (Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
             f"🎯 Targets (Two-Tier Execution):\n"
             f"• TP1: ${tp1} (Profit: +{tp1_pct}% | ROE: +{signal_data.get('roe_tp', 0.0)}% | 1:{rr_tp1} R:R) -> Closes 50% & Moves SL to Breakeven\n"
             f"• TP2: ${tp2} (Profit: +{tp2_pct}% | 1:{rr_tp2} R:R) -> Closes 50% Runner\n\n"
@@ -155,7 +158,6 @@ class NotificationService:
             msg += checklist_str
 
         await self.send_telegram(msg)
-        await self.send_discord(msg)
 
     async def notify_dynamic_level(self, symbol: str, level_name: str, level: float, price: float) -> None:
         """Notify when a dynamically calculated key price level is crossed."""
@@ -165,4 +167,3 @@ class NotificationService:
             f"Current Price: ${price}"
         )
         await self.send_telegram(msg)
-        await self.send_discord(msg)

@@ -52,8 +52,7 @@ class CryptoSentinelApp:
         )
         self.notifier = NotificationService(
             telegram_token=settings.telegram_bot_token,
-            telegram_chat_id=settings.telegram_chat_id,
-            discord_webhook=settings.discord_webhook_url
+            telegram_chat_id=settings.telegram_chat_id
         )
 
     async def initialize(self) -> None:
@@ -61,6 +60,7 @@ class CryptoSentinelApp:
         await self.state_manager.load_state()
         await self.paper_trader.init_db()
         await self.journal_manager.ensure_db_exists()
+        await self.calendar_guard.sync_calendar()
 
     async def _process_symbol(self, symbol: str, news_data: list, circuit_breaker_active: bool, btc_trend: str) -> None:
         """Process a single trading symbol across timeframes."""
@@ -189,6 +189,7 @@ class CryptoSentinelApp:
                                         'tp1_price': signal_data.get('tp1', signal_data['take_profit']),
                                         'tp2_price': signal_data.get('tp2', signal_data['take_profit']),
                                         'leverage': float(signal_data.get('leverage_val', 1.0)),
+                                        'ttl_mins': signal_data.get('ttl_mins', settings.trade_ttl_minutes),
                                         'confidence_score': confidence,
                                         'scoring_checklist': ai_data.get('scoring_checklist', [])
                                     })
@@ -209,6 +210,7 @@ class CryptoSentinelApp:
                                             'tp1_price': signal_data.get('tp1', signal_data['take_profit']),
                                             'tp2_price': signal_data.get('tp2', signal_data['take_profit']),
                                             'leverage': float(signal_data.get('leverage_val', 1.0)),
+                                            'ttl_mins': signal_data.get('ttl_mins', settings.trade_ttl_minutes),
                                             'confidence_score': confidence,
                                             'scoring_checklist': ai_data.get('scoring_checklist', []),
                                             'outcome': 'SHADOW'
@@ -278,13 +280,18 @@ class CryptoSentinelApp:
             logger.error(f"Unexpected error in run_loop: {e}", exc_info=True)
         finally:
             await self.market_data.close()
+            if self.notifier.bot and self.notifier.bot.session:
+                await self.notifier.bot.session.close()
 
 async def main():
     logger.info("Starting Advanced Crypto Sentinel (Refactored)...")
     app = CryptoSentinelApp()
     await app.initialize()
     
-    tasks = [asyncio.create_task(app.run_loop())]
+    tasks = [
+        asyncio.create_task(app.run_loop()),
+        asyncio.create_task(app.calendar_guard.start_sync_task())
+    ]
     if app.notifier.bot:
         tasks.append(asyncio.create_task(app.notifier.start_polling()))
         

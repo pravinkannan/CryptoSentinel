@@ -32,7 +32,7 @@ class AIEvaluatorService:
         self.client = genai.Client(api_key=api_key)
         self.model_name = "gemini-flash-lite-latest"
 
-    async def evaluate_signal(self, symbol: str, signal_data: Dict[str, Any], news_data: List[Dict[str, str]], regime_data: dict = None) -> Optional[str]:
+    async def evaluate_signal(self, symbol: str, signal_data: Dict[str, Any], news_data: List[Dict[str, str]], regime_data: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Send signal and news data to Gemini for a final verdict."""
         regime = regime_data.get("regime", "NORMAL") if regime_data else "NORMAL"
         phase = regime_data.get("phase", "NORMAL") if regime_data else "NORMAL"
@@ -148,7 +148,12 @@ Provide JSON output adhering exactly to the schema.
                 ),
                 timeout=self.timeout
             )
-            text = response.text
+            raw_text = response.text
+            if not raw_text:
+                logger.warning(f"Empty AI response text received for {symbol}.")
+                return None
+
+            text = raw_text.strip()
             if text.startswith("```json"): text = text[7:]
             if text.endswith("```"): text = text[:-3]
             
@@ -185,4 +190,4 @@ Provide JSON output adhering exactly to the schema.
             return None
         except Exception as e:
             logger.error(f"Error during AI evaluation: {e}")
-            raise AIEvaluationError(f"AI evaluation failed: {e}")
+            return None

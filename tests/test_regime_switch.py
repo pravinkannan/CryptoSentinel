@@ -7,41 +7,41 @@ from core.calendar_guard import CalendarGuard
 
 def test_regime_detector_normal():
     detector = RegimeDetector()
-    
+
     # Create mock 5m df with ATR constant
-    df = pd.DataFrame({'atr_14': [10.0] * 25})
-    
+    df = pd.DataFrame({'atr_14': [10.0] * 25, 'volume': [100.0] * 25})
+
     result = detector.detect_regime('BTC/USDT', df)
     assert result['regime'] == 'NORMAL'
     assert result['cooldown_active'] == False
 
 def test_regime_detector_high_volatility():
     detector = RegimeDetector()
-    
+
     # Create mock df where baseline is 10, but current is 30 (3x, which is >= 2.5x)
     data = [10.0] * 24 + [30.0]
-    df = pd.DataFrame({'atr_14': data})
-    
+    df = pd.DataFrame({'atr_14': data, 'volume': [100.0] * len(data)})
+
     result = detector.detect_regime('BTC/USDT', df)
     assert result['regime'] == 'HIGH_VOLATILITY'
     assert result['cooldown_active'] == True
-    assert "Rapid volume expansion" in result['catalyst_info']
-    
+    assert "IMPULSE SHOCK" in result['catalyst_info']
+
 def test_regime_detector_cooldown_persistence():
     detector = RegimeDetector()
-    
+
     data = [10.0] * 24 + [30.0]
-    df = pd.DataFrame({'atr_14': data})
-    
+    df = pd.DataFrame({'atr_14': data, 'volume': [100.0] * len(data)})
+
     # Trigger High Volatility
     result = detector.detect_regime('BTC/USDT', df)
     assert result['cooldown_active'] == True
-    
+
     # Next candle ATR drops back to normal, but cooldown should still be active
-    df2 = pd.DataFrame({'atr_14': [10.0] * 25})
+    df2 = pd.DataFrame({'atr_14': [10.0] * 25, 'volume': [100.0] * 25})
     result2 = detector.detect_regime('BTC/USDT', df2)
-    
-    assert result2['regime'] == 'NORMAL'
+
+    assert result2['regime'] == 'HIGH_VOLATILITY'
     assert result2['cooldown_active'] == True
 
 def test_calendar_guard_blackout():

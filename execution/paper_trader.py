@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from core.exceptions import DatabaseError
 from core.db import get_db_connection
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,64 +39,80 @@ class PaperTradingService:
         try:
             async with get_db_connection(self.db_path) as conn:
                 cursor = await conn.execute('''
-                    SELECT t.trade_id, t.direction, t.entry_price, t.sl_price, t.tp1_price, t.tp2_price, t.tp1_hit, t.leverage, e.mae_pct, e.mfe_pct, t.timestamp
+                    SELECT t.trade_id, t.direction, t.entry_price, t.sl_price, t.tp1_price, t.tp2_price, t.tp1_hit, t.leverage, e.mae_pct, e.mfe_pct, t.timestamp, t.ttl_mins
                     FROM trades t
                     JOIN evaluations e ON t.trade_id = e.trade_id
                     WHERE t.symbol = ? AND t.status = ?
                 ''', (symbol, 'PENDING'))
                 pending_trades = await cursor.fetchall()
-                
+
                 for trade in pending_trades:
-                    trade_id, direction, entry, sl, tp1, tp2, tp1_hit, lev, mae, mfe, ts_str = trade
+                    trade_id, direction, entry, sl, tp1, tp2, tp1_hit, lev, mae, mfe, ts_str, ttl_mins = trade
                     if mae is None: mae = 0.0
                     if mfe is None: mfe = 0.0
+                    if ttl_mins is None: ttl_mins = settings.trade_ttl_minutes
                     status, exit_price = 'PENDING', 0.0
+
+                    try:
+                        trade_time = datetime.fromisoformat(ts_str.replace(' UTC', '+00:00'))
+                        if trade_time.tzinfo is None:
+                            trade_time = trade_time.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        trade_time = datetime.now(timezone.utc)
+
+                    current_mae = 0.0
+                    current_mfe = 0.0
+
+                    if (datetime.now(timezone.utc) - trade_time).total_seconds() > ttl_mins * 60:
+                        status, exit_price = 'EXPIRED', c_close
+                        logger.info(f"Trade {trade_id} for {symbol} expired after {ttl_mins} mins. Closing at market ({c_close}).")
                     
                     fee_drag = (TAKER_FEE_RATE * 2 + DEFAULT_SLIPPAGE_PCT) * lev * 100
                     
-                    if direction.upper() == 'LONG':
-                        current_mae = max(0.0, (entry - c_low) / entry * 100)
-                        current_mfe = max(0.0, (c_high - entry) / entry * 100)
-                        
-                        long_hit_both = (c_high >= tp1) and (c_low <= sl) if not tp1_hit else (c_high >= tp2) and (c_low <= sl)
-                        
-                        if long_hit_both:
-                            logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
-                            status, exit_price = 'LOSS', sl
-                            if tp1_hit: status = 'WIN_TP1'
-                        elif c_low <= sl:
-                            status, exit_price = 'LOSS', sl
-                            if tp1_hit: status = 'WIN_TP1'
-                        elif c_high >= tp1 and not tp1_hit:
-                            tp1_hit = 1
-                            sl = entry
-                            logger.info(f"TP1 hit for LONG {symbol}! Moving SL to BE ({entry}).")
-                            if c_high >= tp2:
-                                status, exit_price = 'WIN_TP2', tp2
-                        elif c_high >= tp2 and tp1_hit:
-                            status, exit_price = 'WIN_TP2', tp2
+                    if status != 'EXPIRED':
+                        if direction.upper() == 'LONG':
+                            current_mae = max(0.0, (entry - c_low) / entry * 100)
+                            current_mfe = max(0.0, (c_high - entry) / entry * 100)
                             
-                    elif direction.upper() == 'SHORT':
-                        current_mae = max(0.0, (c_high - entry) / entry * 100)
-                        current_mfe = max(0.0, (entry - c_low) / entry * 100)
-                        
-                        short_hit_both = (c_low <= tp1) and (c_high >= sl) if not tp1_hit else (c_low <= tp2) and (c_high >= sl)
-                        
-                        if short_hit_both:
-                            logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
-                            status, exit_price = 'LOSS', sl
-                            if tp1_hit: status = 'WIN_TP1'
-                        elif c_high >= sl:
-                            status, exit_price = 'LOSS', sl
-                            if tp1_hit: status = 'WIN_TP1'
-                        elif c_low <= tp1 and not tp1_hit:
-                            tp1_hit = 1
-                            sl = entry
-                            logger.info(f"TP1 hit for SHORT {symbol}! Moving SL to BE ({entry}).")
-                            if c_low <= tp2:
+                            long_hit_both = (c_high >= tp1) and (c_low <= sl) if not tp1_hit else (c_high >= tp2) and (c_low <= sl)
+                            
+                            if long_hit_both:
+                                logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
+                                status, exit_price = 'LOSS', sl
+                                if tp1_hit: status = 'WIN_TP1'
+                            elif c_low <= sl:
+                                status, exit_price = 'LOSS', sl
+                                if tp1_hit: status = 'WIN_TP1'
+                            elif c_high >= tp1 and not tp1_hit:
+                                tp1_hit = 1
+                                sl = entry
+                                logger.info(f"TP1 hit for LONG {symbol}! Moving SL to BE ({entry}).")
+                                if c_high >= tp2:
+                                    status, exit_price = 'WIN_TP2', tp2
+                            elif c_high >= tp2 and tp1_hit:
                                 status, exit_price = 'WIN_TP2', tp2
-                        elif c_low <= tp2 and tp1_hit:
-                            status, exit_price = 'WIN_TP2', tp2
+                                
+                        elif direction.upper() == 'SHORT':
+                            current_mae = max(0.0, (c_high - entry) / entry * 100)
+                            current_mfe = max(0.0, (entry - c_low) / entry * 100)
+                            
+                            short_hit_both = (c_low <= tp1) and (c_high >= sl) if not tp1_hit else (c_low <= tp2) and (c_high >= sl)
+                            
+                            if short_hit_both:
+                                logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
+                                status, exit_price = 'LOSS', sl
+                                if tp1_hit: status = 'WIN_TP1'
+                            elif c_high >= sl:
+                                status, exit_price = 'LOSS', sl
+                                if tp1_hit: status = 'WIN_TP1'
+                            elif c_low <= tp1 and not tp1_hit:
+                                tp1_hit = 1
+                                sl = entry
+                                logger.info(f"TP1 hit for SHORT {symbol}! Moving SL to BE ({entry}).")
+                                if c_low <= tp2:
+                                    status, exit_price = 'WIN_TP2', tp2
+                            elif c_low <= tp2 and tp1_hit:
+                                status, exit_price = 'WIN_TP2', tp2
                             
                     new_mae = max(mae, current_mae)
                     new_mfe = max(mfe, current_mfe)
@@ -113,6 +130,10 @@ class PaperTradingService:
                             net_pnl_pct = gross_pnl_pct - (fee_drag * 0.75)
                         elif status == 'WIN_TP2':
                             gross_pnl_pct = (0.5 * tp1_gain_pct + 0.5 * tp2_gain_pct) * lev * 100
+                            net_pnl_pct = gross_pnl_pct - fee_drag
+                        elif status == 'EXPIRED':
+                            pct_move = (exit_price - entry) / entry if direction.upper() == 'LONG' else (entry - exit_price) / entry
+                            gross_pnl_pct = pct_move * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
                         
                         await conn.execute('UPDATE trades SET status = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
@@ -135,7 +156,8 @@ class PaperTradingService:
                 for r in rows:
                     positions.append({'id': r[0], 'direction': r[1], 'entry': r[2], 'stop_loss': r[3], 'leverage': r[4], 'pnl_pct': r[5]})
                 return positions
-        except:
+        except Exception as e:
+            logger.error(f"Failed to fetch open positions for {symbol}: {e}")
             return []
 
     async def move_sl_to_be(self, trade_id: str, entry_price: float):
@@ -143,8 +165,8 @@ class PaperTradingService:
             async with get_db_connection(self.db_path) as conn:
                 await conn.execute('UPDATE trades SET sl_price = ? WHERE trade_id = ?', (entry_price, trade_id))
                 await conn.commit()
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to move SL to BE for trade {trade_id}: {e}")
 
     async def get_current_drawdown(self) -> float:
         """Calculate maximum capital drawdown across completed trades."""

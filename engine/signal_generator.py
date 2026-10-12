@@ -26,14 +26,15 @@ class SignalGeneratorService:
         self.pattern_recognition = PatternRecognitionService(percentage_trigger=percentage_trigger)
         self.risk_manager = RiskManager(atr_period=atr_period, sl_atr_multiplier=sl_atr_multiplier)
 
-    def get_dynamic_levels(self, current_price: float, symbol: str, df: pd.DataFrame = None) -> Dict[str, float]:
+    def get_dynamic_levels(self, current_price: float, symbol: str, df: Optional[pd.DataFrame] = None) -> Dict[str, float]:
         """Dynamically calculate psychological and historical support/resistance levels."""
-        levels = {}
+        levels: Dict[str, float] = {}
+        step: float = 1.0
         
-        if current_price > 10000: step = 1000
-        elif current_price > 1000: step = 100
-        elif current_price > 100: step = 10
-        elif current_price > 10: step = 1
+        if current_price > 10000: step = 1000.0
+        elif current_price > 1000: step = 100.0
+        elif current_price > 100: step = 10.0
+        elif current_price > 10: step = 1.0
         else: step = 0.1
             
         nearest_round = round(current_price / step) * step
@@ -49,7 +50,7 @@ class SignalGeneratorService:
 
         return levels
 
-    def check_dynamic_levels(self, symbol: str, current_price: float, state_manager, df: pd.DataFrame = None) -> List[tuple[str, float]]:
+    def check_dynamic_levels(self, symbol: str, current_price: float, state_manager: Any, df: Optional[pd.DataFrame] = None) -> List[tuple[str, float]]:
         """Check if price crossed dynamic levels, using state_manager to avoid spam."""
         alerts = []
         dynamic_levels = self.get_dynamic_levels(current_price, symbol, df)
@@ -109,7 +110,7 @@ class SignalGeneratorService:
         except Exception:
             pass
 
-    def analyze_patterns(self, df: pd.DataFrame, timeframe: str, htf_trend: str, htf_4h_trend: str, microstructure: Dict[str, float], symbol: str, btc_trend: str = "Unknown", regime_data: dict = None) -> Optional[Dict[str, Any]]:
+    def analyze_patterns(self, df: pd.DataFrame, timeframe: str, htf_trend: str, htf_4h_trend: str, microstructure: Dict[str, float], symbol: str, btc_trend: str = "Unknown", regime_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Run complete TA logic on a dataframe and return a structured signal payload."""
         if df is None or len(df) < 50:
             return None
@@ -154,21 +155,26 @@ class SignalGeneratorService:
 
         # 4. TTL / Target Resolution Window
         tf_match = re.match(r'(\d+)([mhdw])', timeframe)
-        ttl_mins = 60
-        target_resolution = "Unknown"
+        ttl_mins = settings.trade_ttl_minutes
+        target_resolution = f"4 - {int(settings.trade_ttl_hours)} Hours"
         if regime == "HIGH_VOLATILITY":
-            target_resolution = "15 Mins - 2 Hours (Fast Momentum)"
-            
-        if target_resolution == "Unknown":
+            target_resolution = f"2 - {int(settings.trade_ttl_hours)} Hours (Fast Momentum)"
+            ttl_mins = settings.trade_ttl_minutes
+        else:
             if tf_match:
                 val = int(tf_match.group(1))
                 unit = tf_match.group(2)
-                if unit == 'm':
-                    if val == 5: target_resolution = "30 Mins - 3 Hours"
-                    elif val == 15: target_resolution = "2 - 8 Hours"
-                ttl_mins = val * 3 if unit == 'm' else (val * 60 * 3 if unit == 'h' else 60)
-            
-        expiration_time = (pd.to_datetime(latest['timestamp']) + pd.Timedelta(minutes=ttl_mins) + pd.Timedelta(hours=5, minutes=30)).strftime('%H:%M')
+                if unit == 'h' and val >= 4:
+                    ttl_mins = max(settings.trade_ttl_minutes, val * 60 * 12)
+                    target_resolution = f"18 - {ttl_mins // 60} Hours"
+                elif unit == 'd':
+                    ttl_mins = max(settings.trade_ttl_minutes, val * 1440 * 5)
+                    target_resolution = "Multi-Day Swing"
+                else:
+                    ttl_mins = settings.trade_ttl_minutes
+                    target_resolution = f"4 - {int(settings.trade_ttl_hours)} Hours"
+
+        expiration_time = (pd.to_datetime(latest['timestamp']) + pd.Timedelta(minutes=ttl_mins) + pd.Timedelta(hours=5, minutes=30)).strftime('%d %b %H:%M IST')
 
         # 5. Build and Validate Typed Signal Payload
         return SignalData(

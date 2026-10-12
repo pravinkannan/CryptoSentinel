@@ -1,7 +1,7 @@
 import logging
 import math
 import pandas as pd
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class RiskManager:
             'long_liq_zones': sorted(list(set(long_zones)))[:3]
         }
 
-    def compute_risk_parameters(self, df: pd.DataFrame, symbol: str, timeframe: str, direction: str, entry: float, regime: str) -> Dict[str, Any]:
+    def compute_risk_parameters(self, df: pd.DataFrame, symbol: str, timeframe: str, direction: str, entry: float, regime: str) -> Optional[Dict[str, Any]]:
         """
         Calculate stop loss, take profit targets, risk/reward ratios, and leverage.
         Returns None if risk parameters are rejected.
@@ -51,14 +51,14 @@ class RiskManager:
         if direction == "Bullish":
             stop_loss = recent_low - (atr * self.sl_atr_multiplier)
             risk = entry - stop_loss if entry > stop_loss else entry * 0.01
-            tp1 = entry + (risk * 1.5)
-            tp2 = entry + (risk * 3.0)
+            tp1 = entry + (risk * settings.tp1_rr_ratio)
+            tp2 = entry + (risk * settings.tp2_rr_ratio)
             take_profit = tp1
         elif direction == "Bearish":
             stop_loss = recent_high + (atr * self.sl_atr_multiplier)
             risk = stop_loss - entry if stop_loss > entry else entry * 0.01
-            tp1 = entry - (risk * 1.5)
-            tp2 = entry - (risk * 3.0)
+            tp1 = entry - (risk * settings.tp1_rr_ratio)
+            tp2 = entry - (risk * settings.tp2_rr_ratio)
             take_profit = tp1
         else:
             stop_loss = entry * 0.95
