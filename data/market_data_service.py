@@ -31,7 +31,7 @@ class MarketDataService:
     async def _fetch_ohlcv_with_retry(self, symbol: str, timeframe: str, limit: int):
         return await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> Optional[pd.DataFrame]:
+    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 250) -> Optional[pd.DataFrame]:
         """Fetch OHLCV data and convert to pandas DataFrame."""
         try:
             ohlcv = await self._fetch_ohlcv_with_retry(symbol, timeframe, limit)

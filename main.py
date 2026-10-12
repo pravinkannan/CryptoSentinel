@@ -82,10 +82,10 @@ class CryptoSentinelApp:
                 return
                 
             # 2. Macro Trend Check & Regime Detection
-            df_htf = await self.market_data.fetch_ohlcv(symbol, '1h')
+            df_htf = await self.market_data.fetch_ohlcv(symbol, '1h', limit=250)
             htf_trend = self.signal_generator.get_htf_trend(df_htf) if df_htf is not None else "Unknown"
             
-            df_4h = await self.market_data.fetch_ohlcv(symbol, '4h')
+            df_4h = await self.market_data.fetch_ohlcv(symbol, '4h', limit=250)
             htf_4h_trend = self.signal_generator.get_htf_trend(df_4h) if df_4h is not None else "Unknown"
 
 
@@ -340,7 +340,7 @@ class CryptoSentinelApp:
                 news_data = await self.news_aggregator.get_latest_news(limit=5)
                 
                 # Fetch Global BTC Trend
-                btc_df = await self.market_data.fetch_ohlcv('BTC/USDT', '1h')
+                btc_df = await self.market_data.fetch_ohlcv('BTC/USDT', '1h', limit=250)
                 btc_trend = self.signal_generator.get_htf_trend(btc_df) if btc_df is not None else "Unknown"
                 
                 # Process all symbols

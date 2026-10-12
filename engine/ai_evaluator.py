@@ -43,37 +43,40 @@ class AIEvaluatorService:
         regime = regime_data.get("regime", "NORMAL") if regime_data else "NORMAL"
         phase = regime_data.get("phase", "NORMAL") if regime_data else "NORMAL"
         
-        direction = signal_data.get('direction', 'NEUTRAL')
+        direction_raw = str(signal_data.get('direction', 'NEUTRAL')).upper()
+        is_long = direction_raw in ['LONG', 'BULLISH', 'BUY']
+        is_short = direction_raw in ['SHORT', 'BEARISH', 'SELL']
+        direction = 'LONG' if is_long else 'SHORT' if is_short else 'NEUTRAL'
         
         # 1. Deterministic Python Base-Up Math
         base_score = 75
         checklist = []
         stackable_bonus = 0
         
-        htf = signal_data.get('htf_trend', '')
-        htf4h = signal_data.get('htf_4h_trend', '')
-        btc = signal_data.get('btc_trend', '')
+        htf = str(signal_data.get('htf_trend', ''))
+        htf4h = str(signal_data.get('htf_4h_trend', ''))
+        btc = str(signal_data.get('btc_trend', ''))
         imbalance = float(signal_data.get('imbalance_ratio', 1.0))
         rr = float(signal_data.get('rr_ratio', 0))
         fr = float(signal_data.get('funding_rate', 0.0))
         patterns = signal_data.get('patterns', [])
-        short_liq = signal_data.get('short_liq_zones', 'None')
-        long_liq = signal_data.get('long_liq_zones', 'None')
+        short_liq = str(signal_data.get('short_liq_zones', 'None'))
+        long_liq = str(signal_data.get('long_liq_zones', 'None'))
         oi_delta = float(signal_data.get('oi_delta_pct', 0.0))
-        oi_dir = signal_data.get('oi_direction', 'Neutral')
+        oi_dir = str(signal_data.get('oi_direction', 'Neutral'))
         drift = signal_data.get('pattern_drift_status', 'HEALTHY')
         
         # Bonuses
-        if (htf.startswith('Macro Up') and htf4h.startswith('Macro Up') and direction == 'LONG') or \
-           (htf.startswith('Macro Down') and htf4h.startswith('Macro Down') and direction == 'SHORT'):
+        if (htf.startswith('Macro Up') and htf4h.startswith('Macro Up') and is_long) or \
+           (htf.startswith('Macro Down') and htf4h.startswith('Macro Down') and is_short):
             stackable_bonus += 5
             checklist.append("+5% Macro Trend Alignment")
             
-        if (btc.startswith('Macro Up') and direction == 'LONG') or (btc.startswith('Macro Down') and direction == 'SHORT'):
+        if (btc.startswith('Macro Up') and is_long) or (btc.startswith('Macro Down') and is_short):
             stackable_bonus += 5
             checklist.append("+5% BTC Global Trend Support")
             
-        if (direction == 'LONG' and imbalance >= 1.5) or (direction == 'SHORT' and imbalance <= 0.66):
+        if (is_long and imbalance >= 1.5) or (is_short and imbalance <= 0.66):
             stackable_bonus += 5
             checklist.append("+5% Order Book Dominance")
             
@@ -81,7 +84,7 @@ class AIEvaluatorService:
             stackable_bonus += 5
             checklist.append("+5% Exceptional Risk/Reward")
             
-        if (direction == 'LONG' and fr < 0) or (direction == 'SHORT' and fr > 0):
+        if (is_long and fr < 0) or (is_short and fr > 0):
             stackable_bonus += 5
             checklist.append("+5% Funding Rate Tailwind")
             
@@ -89,7 +92,7 @@ class AIEvaluatorService:
             stackable_bonus += 5
             checklist.append("+5% Multiple Pattern Confluence")
             
-        if (direction == 'LONG' and short_liq != 'None') or (direction == 'SHORT' and long_liq != 'None'):
+        if (is_long and short_liq != 'None' and short_liq != '') or (is_short and long_liq != 'None' and long_liq != ''):
             stackable_bonus += 5
             checklist.append("+5% Magnetic Liquidity Pools")
             
@@ -98,15 +101,16 @@ class AIEvaluatorService:
         current_close = float(signal_data.get('close', 0.0))
         has_aligned_magnet = False
         for m in magnets:
-            if direction == 'LONG' and m.get('side') == 'ASK' and m.get('price', 0) > current_close:
+            m_price = float(m.get('price', 0.0))
+            if is_long and m.get('side') == 'ASK' and m_price > current_close:
                 has_aligned_magnet = True
-            elif direction == 'SHORT' and m.get('side') == 'BID' and m.get('price', 0) < current_close:
+            elif is_short and m.get('side') == 'BID' and m_price < current_close:
                 has_aligned_magnet = True
         if has_aligned_magnet and "+5% Magnetic Liquidity Pools" not in checklist:
             stackable_bonus += 5
             checklist.append("+5% Order Book Liquidity Magnet")
             
-        if oi_delta > 1.5 and oi_dir.lower() == direction.lower():
+        if oi_delta > 1.5 and oi_dir.lower() in ["expanding", "up"]:
             stackable_bonus += 5
             checklist.append("+5% Open Interest Expansion")
             
@@ -122,7 +126,7 @@ class AIEvaluatorService:
         calculated_score = base_score + stackable_bonus
         
         # Deductions
-        if (htf4h.startswith('Macro Down') and direction == 'LONG') or (htf4h.startswith('Macro Up') and direction == 'SHORT'):
+        if (htf4h.startswith('Macro Down') and is_long) or (htf4h.startswith('Macro Up') and is_short):
             calculated_score -= 15
             checklist.append("-15% Macro Trend Conflict")
             
@@ -141,7 +145,7 @@ You are an Institutional Risk Auditor.
 Your job is to audit the qualitative aspects of this trade setup.
 
 Asset: {symbol}
-Current Price: {signal_data['close']}
+Current Price: {signal_data.get('close', 0.0)}
 Technical Direction: {direction}
 Detected Patterns: {", ".join(patterns)}
 Microstructure Note: {signal_data.get('strategy_rationale', 'N/A')}

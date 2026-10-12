@@ -20,9 +20,9 @@ class NewsAggregatorService:
         self.seen_guids: Set[str] = set(self.state_manager.state.get("seen_guids", []))
 
     def clean_html(self, raw_html: str) -> str:
-        """Clean HTML tags from RSS summaries."""
+        """Clean HTML tags from RSS summaries and normalize whitespace."""
         soup = BeautifulSoup(raw_html, "html.parser")
-        return str(soup.get_text(separator=" ").strip())
+        return " ".join(soup.get_text(separator=" ").split())
 
     async def fetch_feed(self, session: aiohttp.ClientSession, url: str) -> List[Dict[str, str]]:
         """Fetch a single RSS feed."""

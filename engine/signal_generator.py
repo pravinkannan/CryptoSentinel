@@ -56,34 +56,45 @@ class SignalGeneratorService:
         alerts = []
         dynamic_levels = self.get_dynamic_levels(current_price, symbol, df)
         
+        if symbol not in state_manager.state["last_crossed_alerts"]:
+            state_manager.state["last_crossed_alerts"][symbol] = []
+        
+        active_alert_keys = set()
         for name, level in dynamic_levels.items():
             if level * 0.998 < current_price < level * 1.002:
                 alert_key = f"{name}_{level}"
-                if alert_key not in state_manager.state["last_crossed_alerts"].get(symbol, []):
+                active_alert_keys.add(alert_key)
+                if alert_key not in state_manager.state["last_crossed_alerts"][symbol]:
                     alerts.append((name, level))
-                    if symbol not in state_manager.state["last_crossed_alerts"]:
-                        state_manager.state["last_crossed_alerts"][symbol] = []
                     state_manager.state["last_crossed_alerts"][symbol].append(alert_key)
-            else:
-                alert_key = f"{name}_{level}"
-                if symbol in state_manager.state["last_crossed_alerts"] and alert_key in state_manager.state["last_crossed_alerts"][symbol]:
-                    state_manager.state["last_crossed_alerts"][symbol].remove(alert_key)
+
+        # Prune alert keys that are no longer in the tolerance band so they can re-trigger on subsequent crosses
+        existing_alerts = list(state_manager.state["last_crossed_alerts"][symbol])
+        for key in existing_alerts:
+            if key not in active_alert_keys:
+                state_manager.state["last_crossed_alerts"][symbol].remove(key)
+
         return alerts
 
     def get_htf_trend(self, df: pd.DataFrame) -> str:
-        """Calculate high timeframe trend based on EMA 200."""
-        if df is None or len(df) < 200:
+        """Calculate high timeframe trend based on EMA 200 (with EMA 50 fallback)."""
+        if df is None or len(df) < 50:
             return "Unknown (Macro Trend)"
             
-        df.ta.ema(length=200, append=True)
         latest = df.iloc[-1]
-        ema200 = latest.get('EMA_200', 0)
         close = latest['close']
         
-        if ema200 > 0:
-            if close > ema200:
+        if len(df) >= 200:
+            df.ta.ema(length=200, append=True)
+            ema_val = df.iloc[-1].get('EMA_200', 0)
+        else:
+            df.ta.ema(length=50, append=True)
+            ema_val = df.iloc[-1].get('EMA_50', 0)
+        
+        if ema_val > 0:
+            if close > ema_val:
                 return "Macro Uptrend (Bullish)"
-            elif close < ema200:
+            elif close < ema_val:
                 return "Macro Downtrend (Bearish)"
         return "Macro Consolidation (Neutral)"
 
