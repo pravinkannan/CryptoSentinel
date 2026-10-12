@@ -45,18 +45,36 @@ class RiskManager:
         if direction not in ["Bullish", "Bearish"]:
             return None
         
-        recent_low = df['low'].tail(15).min()
-        recent_high = df['high'].tail(15).max()
+        # Timeframe-adaptive risk configuration for fast resolution on scalps
+        if timeframe == '5m':
+            lookback = 5
+            atr_mult = 0.5
+            roe_risk_budget = 20.0
+        elif timeframe == '15m':
+            lookback = 8
+            atr_mult = 0.75
+            roe_risk_budget = 18.0
+        elif timeframe == '1h':
+            lookback = 12
+            atr_mult = 1.0
+            roe_risk_budget = 16.0
+        else:
+            lookback = 15
+            atr_mult = self.sl_atr_multiplier
+            roe_risk_budget = 15.0
+
+        recent_low = df['low'].tail(lookback).min()
+        recent_high = df['high'].tail(lookback).max()
 
         if direction == "Bullish":
-            stop_loss = recent_low - (atr * self.sl_atr_multiplier)
-            risk = entry - stop_loss if entry > stop_loss else entry * 0.01
+            stop_loss = recent_low - (atr * atr_mult)
+            risk = entry - stop_loss if entry > stop_loss else entry * 0.005
             tp1 = entry + (risk * settings.tp1_rr_ratio)
             tp2 = entry + (risk * settings.tp2_rr_ratio)
             take_profit = tp1
         elif direction == "Bearish":
-            stop_loss = recent_high + (atr * self.sl_atr_multiplier)
-            risk = stop_loss - entry if stop_loss > entry else entry * 0.01
+            stop_loss = recent_high + (atr * atr_mult)
+            risk = stop_loss - entry if stop_loss > entry else entry * 0.005
             tp1 = entry - (risk * settings.tp1_rr_ratio)
             tp2 = entry - (risk * settings.tp2_rr_ratio)
             take_profit = tp1
@@ -93,12 +111,12 @@ class RiskManager:
             if timeframe == '1h' and sl_pct > 2.50:
                 return None
 
-        # Dynamic Leverage Calculation
+        # Timeframe-Adaptive Leverage Calculation
         if regime == "HIGH_VOLATILITY":
-            rec_lev_val = max(3, min(6, math.floor(15.0 / sl_pct)))
+            rec_lev_val = max(5, min(15, math.floor(roe_risk_budget / sl_pct)))
         else:
-            max_lev = 150 if ("BTC" in symbol or "ETH" in symbol) else 100
-            rec_lev_val = max(5, min(max_lev, math.floor(15.0 / sl_pct)))
+            max_lev = 125 if ("BTC" in symbol or "ETH" in symbol) else 75
+            rec_lev_val = max(5, min(max_lev, math.floor(roe_risk_budget / sl_pct)))
             
         rr_ratio = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0.0
         roe_sl = round(sl_pct * rec_lev_val, 2)

@@ -106,13 +106,19 @@ class AIEvaluatorService:
                 has_aligned_magnet = True
             elif is_short and m.get('side') == 'BID' and m_price < current_close:
                 has_aligned_magnet = True
-        if has_aligned_magnet and "+5% Magnetic Liquidity Pools" not in checklist:
+        if has_aligned_magnet:
             stackable_bonus += 5
             checklist.append("+5% Order Book Liquidity Magnet")
             
         if oi_delta > 1.5 and oi_dir.lower() in ["expanding", "up"]:
             stackable_bonus += 5
             checklist.append("+5% Open Interest Expansion")
+
+        # High Volume Confluence
+        strat_rationale = str(signal_data.get('strategy_rationale', ''))
+        if "higher-than-average volume" in strat_rationale or "high volume" in strat_rationale:
+            stackable_bonus += 5
+            checklist.append("+5% High Volume Confirmation")
             
         # Phase 2 Override
         if phase == 'PHASE 2':

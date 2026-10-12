@@ -184,28 +184,28 @@ class SignalGeneratorService:
             
         liq_zones = self.risk_manager.calculate_liquidation_zones(df)
 
-        # 4. TTL / Target Resolution Window
-        tf_match = re.match(r'(\d+)([mhdw])', timeframe)
+        # 4. Timeframe-Aware Target Horizon & Internal TTL
         ttl_mins = settings.trade_ttl_minutes
-        target_resolution = f"4 - {int(settings.trade_ttl_hours)} Hours"
-        if regime == "HIGH_VOLATILITY":
-            target_resolution = f"2 - {int(settings.trade_ttl_hours)} Hours (Fast Momentum)"
-            ttl_mins = settings.trade_ttl_minutes
+        if timeframe == '5m':
+            target_resolution = "30 – 60 Mins (Intraday Scalp)"
+            expected_horizon_mins = 60
+        elif timeframe == '15m':
+            target_resolution = "1 – 3 Hours (Intraday)"
+            expected_horizon_mins = 180
+        elif timeframe == '1h':
+            target_resolution = "4 – 8 Hours (Swing)"
+            expected_horizon_mins = 480
+        elif timeframe == '4h':
+            target_resolution = "12 – 24 Hours (Macro Swing)"
+            expected_horizon_mins = 1440
         else:
-            if tf_match:
-                val = int(tf_match.group(1))
-                unit = tf_match.group(2)
-                if unit == 'h' and val >= 4:
-                    ttl_mins = max(settings.trade_ttl_minutes, val * 60 * 12)
-                    target_resolution = f"18 - {ttl_mins // 60} Hours"
-                elif unit == 'd':
-                    ttl_mins = max(settings.trade_ttl_minutes, val * 1440 * 5)
-                    target_resolution = "Multi-Day Swing"
-                else:
-                    ttl_mins = settings.trade_ttl_minutes
-                    target_resolution = f"4 - {int(settings.trade_ttl_hours)} Hours"
+            target_resolution = f"4 – {int(settings.trade_ttl_hours)} Hours"
+            expected_horizon_mins = settings.trade_ttl_minutes
 
-        expiration_time = (pd.to_datetime(latest['timestamp']) + pd.Timedelta(minutes=ttl_mins) + pd.Timedelta(hours=5, minutes=30)).strftime('%d %b %H:%M IST')
+        if regime == "HIGH_VOLATILITY":
+            target_resolution += " (Fast Momentum)"
+
+        expiration_time = (pd.to_datetime(latest['timestamp']) + pd.Timedelta(minutes=expected_horizon_mins) + pd.Timedelta(hours=5, minutes=30)).strftime('%d %b %H:%M IST')
 
         # 5. Build and Validate Typed Signal Payload
         return SignalData(

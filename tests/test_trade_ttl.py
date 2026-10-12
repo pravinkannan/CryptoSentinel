@@ -69,7 +69,7 @@ def test_signal_generator_ttl_18_hours():
 
     assert signal is not None
     assert signal['ttl_mins'] == 1080
-    assert "18 Hours" in signal['target_resolution']
+    assert "1 – 3 Hours" in signal['target_resolution']
     assert "IST" in signal['expiration_time']
 
 

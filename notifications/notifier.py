@@ -230,7 +230,7 @@ class NotificationService:
             f"Recommended Leverage: {signal_data.get('recommended_leverage', '1x')}\n"
             f"Entry: ${entry_min} – ${entry_max}\n"
             f"Stop Loss: ${signal_data.get('stop_loss', 0.0)} (Risk: <b>-{signal_data.get('sl_pct', 0.0)}%</b> | ROE: -{signal_data.get('roe_sl', 0.0)}%)\n"
-            f"⏳ Setup Valid For: {ttl_display} ({ttl_mins_val} mins) (Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
+            f"⏳ Target Horizon: {signal_data.get('target_resolution', 'Intraday')} (Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
             f"🎯 Targets (Two-Tier Execution):\n"
             f"• TP1: ${tp1} (Profit: +{tp1_pct}% | ROE: +{signal_data.get('roe_tp', 0.0)}% | 1:{rr_tp1} R:R) -> Closes 50% & Moves SL to Breakeven\n"
             f"• TP2: ${tp2} (Profit: +{tp2_pct}% | 1:{rr_tp2} R:R) -> Closes 50% Runner\n\n"
