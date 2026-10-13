@@ -112,6 +112,7 @@ def test_paper_trader_invalidation_by_reversal(tmp_path):
         open_positions = await paper_trader.get_open_positions('BTC/USDT')
         assert len(open_positions) == 1
         assert open_positions[0]['direction'] == 'SHORT'
+        assert open_positions[0]['confidence_score'] == 90.0
 
         # 2. Force close on reversal
         await paper_trader.close_position(
@@ -123,5 +124,115 @@ def test_paper_trader_invalidation_by_reversal(tmp_path):
         # 3. Position should now be closed
         open_after = await paper_trader.get_open_positions('BTC/USDT')
         assert len(open_after) == 0
+
+    asyncio.run(run_test())
+
+
+def test_bias_flip_confidence_hierarchy_in_main(isolated_state_manager, tmp_path):
+    """
+    Verify that an incoming opposing signal cannot flip an active higher-confidence signal.
+    Specifically: Active 100% SHORT cannot be flipped by a 90% LONG on equal timeframe.
+    """
+    import json
+    import pandas as pd
+    from main import CryptoSentinelApp
+
+    async def run_test():
+        with patch("main.StateManager", return_value=isolated_state_manager):
+            app = CryptoSentinelApp()
+            app.state_manager = isolated_state_manager
+            app.market_data = MagicMock()
+            app.notifier = MagicMock()
+            app.notifier.notify_signal = AsyncMock()
+            app.notifier.notify_dynamic_level = AsyncMock()
+            app.paper_trader = MagicMock()
+            app.paper_trader.update_trades = AsyncMock()
+            app.paper_trader.get_open_positions = AsyncMock(return_value=[])
+            app.paper_trader.close_position = AsyncMock()
+            app.paper_trader.get_current_drawdown = AsyncMock(return_value=0.0)
+            app.signal_generator = MagicMock()
+            app.signal_generator.get_htf_trend = MagicMock(return_value="Bullish")
+            app.signal_generator.check_dynamic_levels = MagicMock(return_value=[])
+            app.ai_evaluator = MagicMock()
+            app.journal_manager = MagicMock()
+            app.journal_manager.check_pattern_drift = AsyncMock(return_value="NORMAL")
+            app.journal_manager.log_trade = AsyncMock(return_value="TRADE_123")
+            app.journal_manager.log_evaluation = AsyncMock()
+            app.portfolio_manager = MagicMock()
+            app.portfolio_manager.check_emergency_guard = AsyncMock()
+            app.regime_detector = MagicMock()
+            app.regime_detector.detect_regime = MagicMock(return_value={"regime": "NORMAL", "phase": "CONSOLIDATION"})
+
+            now = datetime.now(timezone.utc)
+            symbol = "ZEC/USDT"
+            tf = "15m"
+
+            # Set an active 100% SHORT signal
+            isolated_state_manager.state["active_signals"] = {
+                f"{symbol}_{tf}": {
+                    "direction": "SHORT",
+                    "confidence": 100,
+                    "timestamp": now.isoformat(),
+                    "timeframe": tf,
+                    "ttl_mins": 1080
+                }
+            }
+
+            # Prepare fresh 5m and 15m OHLCV
+            df_fresh = pd.DataFrame({
+                'timestamp': [now - timedelta(seconds=60)],
+                'open': [1280.0], 'high': [1295.0], 'low': [1275.0], 'close': [1290.0],
+                'volume': [100.0]
+            })
+            app.market_data.fetch_ohlcv = AsyncMock(return_value=df_fresh)
+            app.market_data.get_market_microstructure = AsyncMock(return_value={'funding_rate': 0.0, 'open_interest': 1000.0, 'imbalance_ratio': 1.0})
+
+            # Signal generator emits a LONG pattern
+            app.signal_generator.analyze_patterns = MagicMock(return_value={
+                'patterns': ['Bullish Engulfing'],
+                'entry': 1290.0,
+                'stop_loss': 1270.0,
+                'take_profit': 1330.0,
+                'sl_pct': 1.5,
+                'tp_pct': 3.0,
+                'recommended_leverage': '10x',
+                'ttl_mins': 1080,
+                'funding_rate': 0.0,
+                'timestamp': now.isoformat(),
+                'regime': 'NORMAL'
+            })
+
+            # AI evaluates opposing LONG with 90% confidence (< 100%)
+            app.ai_evaluator.evaluate_signal = AsyncMock(return_value=json.dumps({
+                'trade_direction': 'LONG',
+                'final_confidence_rating': 90,
+                'overall_verdict': 'CONFIRMED'
+            }))
+
+            with patch.object(settings, "timeframes", ["15m"]):
+                # Process symbol with 90% opposing signal
+                await app._process_symbol(symbol, [], False, "Bullish")
+
+                # Result: 90% LONG must NOT invalidate the 100% SHORT
+                assert f"{symbol}_{tf}" in isolated_state_manager.state["active_signals"]
+                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["direction"] == "SHORT"
+                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 100
+                app.notifier.notify_signal.assert_not_awaited()
+                app.paper_trader.close_position.assert_not_awaited()
+
+                # Now test when AI evaluates opposing LONG with 100% confidence (>= 100%)
+                app.ai_evaluator.evaluate_signal = AsyncMock(return_value=json.dumps({
+                    'trade_direction': 'LONG',
+                    'final_confidence_rating': 100,
+                    'overall_verdict': 'CONFIRMED'
+                }))
+
+                await app._process_symbol(symbol, [], False, "Bullish")
+
+                # Result: 100% LONG IS accepted and flips the bias!
+                assert f"{symbol}_{tf}" in isolated_state_manager.state["active_signals"]
+                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["direction"] == "LONG"
+                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 100
+                app.notifier.notify_signal.assert_awaited_once()
 
     asyncio.run(run_test())

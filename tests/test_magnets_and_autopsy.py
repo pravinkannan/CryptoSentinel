@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 
 from core.config import settings
@@ -68,12 +68,65 @@ def test_liquidity_magnet_telegram_rendering():
         }
         ai_data = {'trade_direction': 'Bullish', 'final_confidence_rating': 85, 'strategy_analysis': 'Liquidity pool detected'}
 
-        await notifier.notify_signal('BTC/USDT', signal, ai_data, 0.0)
-        msg = notifier.send_telegram.call_args[0][0]
-        assert "🧲 <b>LIQUIDITY MAGNETS DETECTED" in msg
-        assert "$4.1M BID Pool" in msg
-        assert "$82000.0" in msg
-        assert "Next Action:" in msg
+        with patch.object(settings, "verbose_telegram_signals", True):
+            await notifier.notify_signal('BTC/USDT', signal, ai_data, 0.0)
+            msg = notifier.send_telegram.call_args[0][0]
+            assert "🧲 <b>LIQUIDITY MAGNETS DETECTED" in msg
+            assert "$4.1M BID Pool" in msg
+            assert "$82000.0" in msg
+            assert "Next Action:" in msg
+
+    asyncio.run(run_test())
+
+
+def test_notify_signal_clean_compact_by_default():
+    """Verify that by default, notifications are clean and stripped of clutter for users."""
+    async def run_test():
+        notifier = NotificationService(telegram_token="dummy", telegram_chat_id="dummy")
+        notifier.send_telegram = AsyncMock()
+
+        signal = {
+            'timeframe': '15m',
+            'entry': 108.07,
+            'stop_loss': 110.06,
+            'take_profit': 102.09,
+            'tp1': 105.08,
+            'tp2': 102.09,
+            'sl_pct': 1.84,
+            'tp1_pct': 2.77,
+            'tp2_pct': 5.53,
+            'recommended_leverage': '8x',
+            'ttl_mins': 1080,
+            'expiration_time': '01:00 UTC',
+            'direction': 'Bearish',
+            'liquidity_magnets': [{'side': 'ASK', 'price': 110.5, 'volume_formatted': '$4M', 'distance_pct': 2.2, 'ratio': 3.0}]
+        }
+        ai_data = {
+            'trade_direction': 'Bearish',
+            'final_confidence_rating': 95,
+            'strategy_analysis': 'Detailed market context description',
+            'scoring_checklist': ['+5% Macro Trend Alignment', '+5% Liquidity Pools']
+        }
+
+        with patch.object(settings, "verbose_telegram_signals", False):
+            await notifier.notify_signal('SOL/USDT', signal, ai_data, 0.0)
+            msg = notifier.send_telegram.call_args[0][0]
+
+            # Necessary trade parameters present
+            assert "SOL/USDT" in msg
+            assert "SHORT" in msg
+            assert "95%" in msg
+            assert "👑 VIP TIER" in msg
+            assert "8x" in msg
+            assert "Stop Loss: <b>$110.06 (-1.84% | ROE: -14.72%)</b>" in msg
+            assert "TP1: <b>$105.08 (+2.77% | ROE: +22.16%)</b>" in msg
+            assert "TP2: <b>$102.09 (+5.53% | Total ROE: +33.2%)</b>" in msg
+
+            # Unnecessary noise / clutter omitted for users
+            assert "Market Context" not in msg
+            assert "AI Scoring Checklist" not in msg
+            assert "R:R" not in msg
+            assert "LIQUIDITY MAGNETS" not in msg
 
     asyncio.run(run_test())
 

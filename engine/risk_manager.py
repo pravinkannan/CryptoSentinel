@@ -121,6 +121,9 @@ class RiskManager:
         rr_ratio = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0.0
         roe_sl = round(sl_pct * rec_lev_val, 2)
         roe_tp = round(tp_pct * rec_lev_val, 2)
+        roe_tp1 = round(tp1_pct * rec_lev_val, 2)
+        roe_tp2 = round(tp2_pct * rec_lev_val, 2)
+        overall_tp2_roe = round((0.5 * tp1_pct + 0.5 * tp2_pct) * rec_lev_val, 2)
         
         return {
             'stop_loss': round(stop_loss, 2),
@@ -134,6 +137,9 @@ class RiskManager:
             'rr_ratio': rr_ratio,
             'roe_sl': roe_sl,
             'roe_tp': roe_tp,
+            'roe_tp1': roe_tp1,
+            'roe_tp2': roe_tp2,
+            'overall_tp2_roe': overall_tp2_roe,
             'atr_value': round(atr, 4),
             'leverage_val': rec_lev_val,
             'recommended_leverage': f"{rec_lev_val}x"

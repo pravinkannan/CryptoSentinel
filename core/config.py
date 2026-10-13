@@ -43,6 +43,10 @@ class Settings(BaseSettings):
         "https://decrypt.co/feed"
     ])
     
+    enable_circuit_breaker: bool = Field(default=False, description="Enable automated drawdown circuit breaker")
+    enable_dynamic_level_alerts: bool = Field(default=False, description="Enable notification alerts when price crosses dynamic support/resistance levels")
+    dynamic_level_cooldown_minutes: int = Field(default=120, description="Minimum cooldown minutes before repeating an alert for the same dynamic level")
+    verbose_telegram_signals: bool = Field(default=False, description="Include detailed technical market context, checklists, and order book walls in Telegram alerts")
     max_drawdown_percent: float = Field(default=5.0)
     llm_timeout_seconds: float = Field(default=30.0)
 

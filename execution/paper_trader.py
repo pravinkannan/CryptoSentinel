@@ -8,6 +8,7 @@ import re
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+import pandas as pd
 from core.exceptions import DatabaseError
 from core.db import get_db_connection
 from core.config import settings
@@ -30,10 +31,8 @@ class PaperTradingService:
         pass
             
     async def update_trades(self, symbol: str, df_5m, journal_manager=None, notifier=None, ai_evaluator=None, market_data=None) -> None:
-        """Check all pending trades for the given symbol against the current candle."""
+        """Check all pending trades for the given symbol against candles chronologically."""
         if df_5m is None or df_5m.empty: return
-        candle = df_5m.iloc[-1]
-        c_high, c_low, c_close = float(candle['high']), float(candle['low']), float(candle['close'])
         
         TAKER_FEE_RATE = 0.0005
         DEFAULT_SLIPPAGE_PCT = 0.0003
@@ -62,16 +61,51 @@ class PaperTradingService:
                     except Exception:
                         trade_time = datetime.now(timezone.utc)
 
-                    current_mae = 0.0
-                    current_mfe = 0.0
+                    # Determine candidate candles for this trade
+                    has_timestamps = 'timestamp' in df_5m.columns
+                    if has_timestamps:
+                        c_times = pd.to_datetime(df_5m['timestamp'], utc=True)
+                        eval_df = df_5m[c_times >= trade_time]
+                        if eval_df.empty:
+                            if c_times.iloc[-1] < trade_time:
+                                continue
+                            eval_df = df_5m
+                    else:
+                        eval_df = df_5m
 
-                    if (datetime.now(timezone.utc) - trade_time).total_seconds() > ttl_mins * 60:
-                        status, exit_price = 'EXPIRED', c_close
-                        logger.info(f"Trade {trade_id} for {symbol} expired after {ttl_mins} mins. Closing at market ({c_close}).")
-                    
                     fee_drag = (TAKER_FEE_RATE * 2 + DEFAULT_SLIPPAGE_PCT) * lev * 100
+                    exit_candle = eval_df.iloc[-1]
                     
-                    if status != 'EXPIRED':
+                    for _, candle in eval_df.iterrows():
+                        c_high = float(candle['high'])
+                        c_low = float(candle['low'])
+                        c_close = float(candle['close'])
+                        
+                        # Check expiration at this candle
+                        if has_timestamps and 'timestamp' in candle:
+                            c_time = candle['timestamp']
+                            if isinstance(c_time, str):
+                                c_time = pd.to_datetime(c_time)
+                            if hasattr(c_time, 'tz_localize') and c_time.tzinfo is None:
+                                c_time = c_time.tz_localize('UTC')
+                            elif hasattr(c_time, 'tz_convert') and c_time.tzinfo is not None:
+                                c_time = c_time.tz_convert('UTC')
+                            
+                            if (c_time - trade_time).total_seconds() > ttl_mins * 60:
+                                status, exit_price = 'EXPIRED', c_close
+                                exit_candle = candle
+                                logger.info(f"Trade {trade_id} for {symbol} expired at candle {c_time} after {ttl_mins} mins. Closing at market ({c_close}).")
+                                break
+                        else:
+                            if (datetime.now(timezone.utc) - trade_time).total_seconds() > ttl_mins * 60:
+                                status, exit_price = 'EXPIRED', c_close
+                                exit_candle = candle
+                                logger.info(f"Trade {trade_id} for {symbol} expired after {ttl_mins} mins. Closing at market ({c_close}).")
+                                break
+                                
+                        current_mae = 0.0
+                        current_mfe = 0.0
+                        
                         if direction.upper() == 'LONG':
                             current_mae = max(0.0, (entry - c_low) / entry * 100)
                             current_mfe = max(0.0, (c_high - entry) / entry * 100)
@@ -82,17 +116,25 @@ class PaperTradingService:
                                 logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
                                 status, exit_price = 'LOSS', sl
                                 if tp1_hit: status = 'WIN_TP1'
+                                exit_candle = candle
+                                break
                             elif c_low <= sl:
                                 status, exit_price = 'LOSS', sl
                                 if tp1_hit: status = 'WIN_TP1'
+                                exit_candle = candle
+                                break
                             elif c_high >= tp1 and not tp1_hit:
                                 tp1_hit = 1
                                 sl = entry
                                 logger.info(f"TP1 hit for LONG {symbol}! Moving SL to BE ({entry}).")
                                 if c_high >= tp2:
                                     status, exit_price = 'WIN_TP2', tp2
+                                    exit_candle = candle
+                                    break
                             elif c_high >= tp2 and tp1_hit:
                                 status, exit_price = 'WIN_TP2', tp2
+                                exit_candle = candle
+                                break
                                 
                         elif direction.upper() == 'SHORT':
                             current_mae = max(0.0, (c_high - entry) / entry * 100)
@@ -104,21 +146,36 @@ class PaperTradingService:
                                 logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
                                 status, exit_price = 'LOSS', sl
                                 if tp1_hit: status = 'WIN_TP1'
+                                exit_candle = candle
+                                break
                             elif c_high >= sl:
                                 status, exit_price = 'LOSS', sl
                                 if tp1_hit: status = 'WIN_TP1'
+                                exit_candle = candle
+                                break
                             elif c_low <= tp1 and not tp1_hit:
                                 tp1_hit = 1
                                 sl = entry
                                 logger.info(f"TP1 hit for SHORT {symbol}! Moving SL to BE ({entry}).")
                                 if c_low <= tp2:
                                     status, exit_price = 'WIN_TP2', tp2
+                                    exit_candle = candle
+                                    break
                             elif c_low <= tp2 and tp1_hit:
                                 status, exit_price = 'WIN_TP2', tp2
-                            
-                    new_mae = max(mae, current_mae)
-                    new_mfe = max(mfe, current_mfe)
-                            
+                                exit_candle = candle
+                                break
+                                
+                        mae = max(mae, current_mae)
+                        mfe = max(mfe, current_mfe)
+                        
+                    if status == 'PENDING':
+                        if (datetime.now(timezone.utc) - trade_time).total_seconds() > ttl_mins * 60:
+                            c_close_latest = float(eval_df.iloc[-1]['close'])
+                            status, exit_price = 'EXPIRED', c_close_latest
+                            exit_candle = eval_df.iloc[-1]
+                            logger.info(f"Trade {trade_id} for {symbol} expired by elapsed wall-clock ({ttl_mins} mins). Closing at market ({exit_price}).")
+
                     if status != 'PENDING':
                         tp1_gain_pct = (tp1 - entry) / entry if direction.upper() == 'LONG' else (entry - tp1) / entry
                         tp2_gain_pct = (tp2 - entry) / entry if direction.upper() == 'LONG' else (entry - tp2) / entry
@@ -139,8 +196,8 @@ class PaperTradingService:
                             net_pnl_pct = gross_pnl_pct - fee_drag
                         
                         await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
-                        await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (new_mae, new_mfe, trade_id))
-                        logger.info(f"Paper trade closed: {trade_id} {symbol} -> {status} with Net PnL {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%) (MAE: {new_mae:.2f}%, MFE: {new_mfe:.2f}%)")
+                        await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
+                        logger.info(f"Paper trade closed: {trade_id} {symbol} -> {status} with Net PnL {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%) (MAE: {mae:.2f}%, MFE: {mfe:.2f}%)")
 
                         # Trigger Post-Trade Forensic Autopsy on LOSS
                         if status == 'LOSS' and journal_manager is not None and ai_evaluator is not None:
@@ -155,11 +212,11 @@ class PaperTradingService:
                                     'net_pnl_pct': net_pnl_pct
                                 }
                                 sl_candle = {
-                                    'open': float(candle['open']),
-                                    'high': c_high,
-                                    'low': c_low,
-                                    'close': c_close,
-                                    'volume': float(candle['volume']) if 'volume' in candle else 0.0
+                                    'open': float(exit_candle['open']) if 'open' in exit_candle else float(exit_candle['close']),
+                                    'high': float(exit_candle['high']),
+                                    'low': float(exit_candle['low']),
+                                    'close': float(exit_candle['close']),
+                                    'volume': float(exit_candle['volume']) if 'volume' in exit_candle else 0.0
                                 }
                                 asyncio.create_task(
                                     self._trigger_autopsy(trade_summary, sl_candle, journal_manager, ai_evaluator, market_data, symbol)
@@ -169,7 +226,7 @@ class PaperTradingService:
                         
                     else:
                         await conn.execute('UPDATE trades SET tp1_hit = ?, sl_price = ? WHERE trade_id = ?', (tp1_hit, sl, trade_id))
-                        await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (new_mae, new_mfe, trade_id))
+                        await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                 await conn.commit()
         except Exception as e:
             logger.error(f"Failed to update trades: {e}")
@@ -177,11 +234,24 @@ class PaperTradingService:
     async def get_open_positions(self, symbol: str):
         try:
             async with get_db_connection(self.db_path) as conn:
-                cursor = await conn.execute('SELECT trade_id, direction, entry_price, sl_price, leverage, pnl_pct FROM trades WHERE symbol = ? AND status = "PENDING"', (symbol,))
+                cursor = await conn.execute('''
+                    SELECT t.trade_id, t.direction, t.entry_price, t.sl_price, t.leverage, t.pnl_pct, COALESCE(e.confidence_score, 0.0)
+                    FROM trades t
+                    LEFT JOIN evaluations e ON t.trade_id = e.trade_id
+                    WHERE t.symbol = ? AND t.status = "PENDING"
+                ''', (symbol,))
                 rows = await cursor.fetchall()
                 positions = []
                 for r in rows:
-                    positions.append({'id': r[0], 'direction': r[1], 'entry': r[2], 'stop_loss': r[3], 'leverage': r[4], 'pnl_pct': r[5]})
+                    positions.append({
+                        'id': r[0],
+                        'direction': r[1],
+                        'entry': r[2],
+                        'stop_loss': r[3],
+                        'leverage': r[4],
+                        'pnl_pct': r[5],
+                        'confidence_score': float(r[6])
+                    })
                 return positions
         except Exception as e:
             logger.error(f"Failed to fetch open positions for {symbol}: {e}")

@@ -145,3 +145,98 @@ def test_check_dynamic_levels_cross_and_deduplication(signal_generator):
     # 4. Price returns back to 65000.0 band -> Must trigger a new alert
     alerts_retest = signal_generator.check_dynamic_levels(symbol, 65020.0, state_mgr)
     assert any(lvl == target_level for _, lvl in alerts_retest)
+
+
+def test_dynamic_level_alerts_disabled_by_default(isolated_state_manager):
+    """
+    Verify that dynamic level notification alerts are disabled by default
+    so they do not spam notifications or disturb trade signals.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import datetime, timezone, timedelta
+    from main import CryptoSentinelApp
+    from core.config import settings
+
+    assert settings.enable_dynamic_level_alerts is False
+
+    async def run_test():
+        with patch("main.StateManager", return_value=isolated_state_manager):
+            app = CryptoSentinelApp()
+            app.state_manager = isolated_state_manager
+            app.market_data = MagicMock()
+            app.notifier = MagicMock()
+            app.notifier.notify_dynamic_level = AsyncMock()
+            app.paper_trader = MagicMock()
+            app.paper_trader.update_trades = AsyncMock()
+            app.signal_generator = MagicMock()
+            app.signal_generator.check_dynamic_levels = MagicMock(return_value=[("Psychological 110.0", 110.0)])
+            app.signal_generator.analyze_patterns = MagicMock(return_value=None)
+            app.regime_detector = MagicMock()
+            app.regime_detector.detect_regime = MagicMock(return_value={"regime": "NORMAL", "phase": "CONSOLIDATION"})
+
+            now = datetime.now(timezone.utc)
+            df = pd.DataFrame({
+                'timestamp': [now - timedelta(seconds=60)],
+                'open': [110.1], 'high': [110.3], 'low': [109.9], 'close': [110.2],
+                'volume': [100.0]
+            })
+            app.market_data.fetch_ohlcv = AsyncMock(return_value=df)
+
+            with patch.object(settings, "enable_dynamic_level_alerts", False):
+                await app._process_symbol("SOL/USDT", [], False, "Bullish")
+                # When disabled, notify_dynamic_level must NOT be called
+                app.notifier.notify_dynamic_level.assert_not_awaited()
+
+            with patch.object(settings, "enable_dynamic_level_alerts", True):
+                await app._process_symbol("SOL/USDT", [], False, "Bullish")
+                # When enabled, notify_dynamic_level is called
+                app.notifier.notify_dynamic_level.assert_awaited_once()
+
+    asyncio.run(run_test())
+
+
+def test_dynamic_level_alerts_cooldown_throttling(isolated_state_manager):
+    """
+    Verify that when dynamic level alerts are enabled, subsequent crosses of the same
+    level within the cooldown window are throttled and not sent to Telegram.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import datetime, timezone, timedelta
+    from main import CryptoSentinelApp
+    from core.config import settings
+
+    async def run_test():
+        with patch("main.StateManager", return_value=isolated_state_manager):
+            app = CryptoSentinelApp()
+            app.state_manager = isolated_state_manager
+            app.market_data = MagicMock()
+            app.notifier = MagicMock()
+            app.notifier.notify_dynamic_level = AsyncMock()
+            app.paper_trader = MagicMock()
+            app.paper_trader.update_trades = AsyncMock()
+            app.signal_generator = MagicMock()
+            app.signal_generator.check_dynamic_levels = MagicMock(return_value=[("Psychological 110.0", 110.0)])
+            app.signal_generator.analyze_patterns = MagicMock(return_value=None)
+            app.regime_detector = MagicMock()
+            app.regime_detector.detect_regime = MagicMock(return_value={"regime": "NORMAL", "phase": "CONSOLIDATION"})
+
+            now = datetime.now(timezone.utc)
+            df = pd.DataFrame({
+                'timestamp': [now - timedelta(seconds=60)],
+                'open': [110.1], 'high': [110.3], 'low': [109.9], 'close': [110.2],
+                'volume': [100.0]
+            })
+            app.market_data.fetch_ohlcv = AsyncMock(return_value=df)
+
+            with patch.object(settings, "enable_dynamic_level_alerts", True):
+                # 1. First alert sent
+                await app._process_symbol("SOL/USDT", [], False, "Bullish")
+                assert app.notifier.notify_dynamic_level.await_count == 1
+
+                # 2. Repeated trigger 5 minutes later -> Throttled by cooldown (120m)
+                await app._process_symbol("SOL/USDT", [], False, "Bullish")
+                assert app.notifier.notify_dynamic_level.await_count == 1  # Still 1!
+
+    asyncio.run(run_test())

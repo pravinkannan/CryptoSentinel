@@ -183,18 +183,27 @@ class NotificationService:
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
             )
             
-        catalyst_str = ""
-        catalyst_info = signal_data.get('catalyst_info', '')
-        if catalyst_info:
-            catalyst_str = f"\n\n📰 Market Catalyst:\n• {catalyst_info}"
-        
+        sl_val = signal_data.get('stop_loss', 0.0)
+        sl_pct = signal_data.get('sl_pct', 0.0)
         tp1 = signal_data.get('tp1', signal_data.get('take_profit', 0.0))
         tp2 = signal_data.get('tp2', signal_data.get('take_profit', 0.0))
         tp1_pct = signal_data.get('tp1_pct', signal_data.get('tp_pct', 0.0))
         tp2_pct = signal_data.get('tp2_pct', signal_data.get('tp_pct', 0.0))
         
-        rr_tp1 = round(tp1_pct / signal_data.get('sl_pct', 1.0), 1) if signal_data.get('sl_pct') else 0.0
-        rr_tp2 = round(tp2_pct / signal_data.get('sl_pct', 1.0), 1) if signal_data.get('sl_pct') else 0.0
+        lev = signal_data.get('leverage_val')
+        if lev is None:
+            try:
+                import re
+                lev_match = re.search(r'(\d+(\.\d+)?)', str(signal_data.get('recommended_leverage', '1')))
+                lev = float(lev_match.group(1)) if lev_match else 1.0
+            except Exception:
+                lev = 1.0
+        else:
+            lev = float(lev)
+
+        roe_sl = round(abs(float(signal_data.get('roe_sl') or (sl_pct * lev))), 2)
+        roe_tp1 = round(abs(float(signal_data.get('roe_tp1') or signal_data.get('roe_tp') or (tp1_pct * lev))), 2)
+        overall_tp2_roe = round(abs(float(signal_data.get('overall_tp2_roe') or ((0.5 * tp1_pct + 0.5 * tp2_pct) * lev))), 2)
 
         tier_badge = " | 👑 VIP TIER" if confidence >= settings.vip_confidence_threshold else " | 🔹 STANDARD TIER"
         ttl_mins_val = signal_data.get('ttl_mins', 1080)
@@ -205,45 +214,55 @@ class NotificationService:
         if reversal_notice:
             reversal_str = f"🔄 <b>BIAS FLIP / INVALIDATION NOTICE</b>\n{reversal_notice}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        magnet_str = ""
-        magnets = signal_data.get('liquidity_magnets', [])
-        if magnets:
-            magnet_lines = []
-            for m in magnets:
-                icon = "🟢" if m.get('side') == 'BID' else "🔴"
-                action_text = m.get('action')
-                if not action_text:
-                    role = "Target Pull" if (direction == 'Bullish' and m.get('side') == 'ASK') or (direction == 'Bearish' and m.get('side') == 'BID') else "Liquidity Wall / Sweep Pool"
-                    action_text = f"Monitor price reaction near ${m.get('price', 0.0)} ({role})."
-                magnet_lines.append(
-                    f"• {icon} <b>{m.get('volume_formatted', '')} {m.get('side', '')} Pool</b> at <b>${m.get('price', 0.0)}</b> "
-                    f"({m.get('distance_pct', 0.0):+.2f}% | {m.get('ratio', 1.0)}x depth)\n"
-                    f"  ↳ <b>Next Action:</b> <i>{action_text}</i>"
-                )
-            magnet_str = "\n\n🧲 <b>LIQUIDITY MAGNETS DETECTED & NEXT ACTIONS</b>:\n" + "\n".join(magnet_lines)
-
         msg = (
             f"{reversal_str}"
             f"{tag_str}\n"
             f"{badge_str}"
-            f"Action: {action_str} | Confidence: {confidence}%{tier_badge}\n"
-            f"Recommended Leverage: {signal_data.get('recommended_leverage', '1x')}\n"
-            f"Entry: ${entry_min} – ${entry_max}\n"
-            f"Stop Loss: ${signal_data.get('stop_loss', 0.0)} (Risk: <b>-{signal_data.get('sl_pct', 0.0)}%</b> | ROE: -{signal_data.get('roe_sl', 0.0)}%)\n"
+            f"Action: <b>{action_str}</b> | Confidence: <b>{confidence}%</b>{tier_badge}\n"
+            f"Recommended Leverage: <b>{signal_data.get('recommended_leverage', '1x')}</b>\n"
+            f"Entry: <b>${entry_min} – ${entry_max}</b>\n"
+            f"Stop Loss: <b>${sl_val} (-{sl_pct}% | ROE: -{roe_sl}%)</b>\n"
             f"⏳ Target Horizon: {signal_data.get('target_resolution', 'Intraday')} (Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
-            f"🎯 Targets (Two-Tier Execution):\n"
-            f"• TP1: ${tp1} (Profit: +{tp1_pct}% | ROE: +{signal_data.get('roe_tp', 0.0)}% | 1:{rr_tp1} R:R) -> Closes 50% & Moves SL to Breakeven\n"
-            f"• TP2: ${tp2} (Profit: +{tp2_pct}% | 1:{rr_tp2} R:R) -> Closes 50% Runner\n\n"
-            f"📰 Market Context:\n"
-            f"• {news_summary}"
-            f"{catalyst_str}"
-            f"{magnet_str}"
+            f"🎯 Take Profit Targets:\n"
+            f"• TP1: <b>${tp1} (+{tp1_pct}% | ROE: +{roe_tp1}%)</b> -> Closes 50% & Moves SL to Breakeven\n"
+            f"• TP2: <b>${tp2} (+{tp2_pct}% | Total ROE: +{overall_tp2_roe}%)</b> -> Closes 50% Runner"
         )
-        
-        checklist = ai_data.get('scoring_checklist', [])
-        if checklist and isinstance(checklist, list):
-            checklist_str = "\n\n✅ AI Scoring Checklist:\n" + "\n".join([f"• {item}" for item in checklist])
-            msg += checklist_str
+
+        # Detailed internal technical diagnostics appended only if verbose mode is enabled
+        if settings.verbose_telegram_signals:
+            catalyst_str = ""
+            catalyst_info = signal_data.get('catalyst_info', '')
+            if catalyst_info:
+                catalyst_str = f"\n\n📰 Market Catalyst:\n• {catalyst_info}"
+
+            magnet_str = ""
+            magnets = signal_data.get('liquidity_magnets', [])
+            if magnets:
+                magnet_lines = []
+                for m in magnets:
+                    icon = "🟢" if m.get('side') == 'BID' else "🔴"
+                    action_text = m.get('action')
+                    if not action_text:
+                        role = "Target Pull" if (direction == 'Bullish' and m.get('side') == 'ASK') or (direction == 'Bearish' and m.get('side') == 'BID') else "Liquidity Wall / Sweep Pool"
+                        action_text = f"Monitor price reaction near ${m.get('price', 0.0)} ({role})."
+                    magnet_lines.append(
+                        f"• {icon} <b>{m.get('volume_formatted', '')} {m.get('side', '')} Pool</b> at <b>${m.get('price', 0.0)}</b> "
+                        f"({m.get('distance_pct', 0.0):+.2f}% | {m.get('ratio', 1.0)}x depth)\n"
+                        f"  ↳ <b>Next Action:</b> <i>{action_text}</i>"
+                    )
+                magnet_str = "\n\n🧲 <b>LIQUIDITY MAGNETS DETECTED & NEXT ACTIONS</b>:\n" + "\n".join(magnet_lines)
+
+            checklist_str = ""
+            checklist = ai_data.get('scoring_checklist', [])
+            if checklist and isinstance(checklist, list):
+                checklist_str = "\n\n✅ AI Scoring Checklist:\n" + "\n".join([f"• {item}" for item in checklist])
+
+            msg += (
+                f"\n\n📰 Market Context:\n• {news_summary}"
+                f"{catalyst_str}"
+                f"{magnet_str}"
+                f"{checklist_str}"
+            )
 
         await self.send_telegram(msg)
 

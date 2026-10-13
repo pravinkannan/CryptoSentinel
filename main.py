@@ -66,8 +66,8 @@ class CryptoSentinelApp:
     async def _process_symbol(self, symbol: str, news_data: list, circuit_breaker_active: bool, btc_trend: str) -> None:
         """Process a single trading symbol across timeframes."""
         try:
-            # 1. Heartbeat Watchdog & Data Freshness
-            df_5m = await self.market_data.fetch_ohlcv(symbol, '5m')
+            # 1. Heartbeat Watchdog & Data Freshness (fetch up to 500 candles / ~41.6 hrs to cover downtime)
+            df_5m = await self.market_data.fetch_ohlcv(symbol, '5m', limit=500)
             if df_5m is None or df_5m.empty:
                 return
                 
@@ -111,11 +111,25 @@ class CryptoSentinelApp:
                     current_price = float(df.iloc[-1]['close'])
                     
 
-                    # Check Dynamic Levels
-                    crossed_levels = self.signal_generator.check_dynamic_levels(symbol, current_price, self.state_manager, df)
-                    for name, level in crossed_levels:
-                        logger.info(f"Dynamic level '{name}' ({level}) crossed for {symbol}")
-                        await self.notifier.notify_dynamic_level(symbol, name, level, current_price)
+                    # Check Dynamic Levels once per symbol on base timeframe
+                    if tf == settings.timeframes[0]:
+                        crossed_levels = self.signal_generator.check_dynamic_levels(symbol, current_price, self.state_manager, df)
+                        for name, level in crossed_levels:
+                            logger.info(f"Dynamic level '{name}' ({level}) crossed for {symbol}")
+                            if settings.enable_dynamic_level_alerts:
+                                last_alert_times = self.state_manager.state.setdefault("dynamic_level_alert_timestamps", {})
+                                alert_tag = f"{symbol}_{name}"
+                                last_ts_str = last_alert_times.get(alert_tag)
+                                if last_ts_str:
+                                    try:
+                                        last_ts = datetime.fromisoformat(last_ts_str)
+                                        if (now_utc - last_ts).total_seconds() < settings.dynamic_level_cooldown_minutes * 60:
+                                            logger.info(f"Dynamic level alert throttled by cooldown: {alert_tag}")
+                                            continue
+                                    except Exception:
+                                        pass
+                                last_alert_times[alert_tag] = now_utc.isoformat()
+                                await self.notifier.notify_dynamic_level(symbol, name, level, current_price)
                         
                     if circuit_breaker_active:
                         continue
@@ -179,6 +193,7 @@ class CryptoSentinelApp:
                                         sig_dir = sig.get('direction', '')
                                         sig_tf = sig.get('timeframe', k.split('_')[-1])
                                         sig_rank = TF_RANKS.get(sig_tf, 2)
+                                        sig_conf = sig.get('confidence', 0)
                                         
                                         # Check for conflicting direction across timeframes
                                         if sig_dir and sig_dir != direction:
@@ -187,7 +202,7 @@ class CryptoSentinelApp:
                                                 if confidence < settings.vip_confidence_threshold:
                                                     logger.info(
                                                         f"Counter-trend setup filtered: {symbol} {tf} {direction} ({confidence}%) "
-                                                        f"opposes active higher-timeframe {sig_tf} {sig_dir} ({sig.get('confidence', 0)}%)."
+                                                        f"opposes active higher-timeframe {sig_tf} {sig_dir} ({sig_conf}%)."
                                                     )
                                                     skip_dispatch = True
                                                     break
@@ -197,8 +212,18 @@ class CryptoSentinelApp:
                                                         f"Use strict stop loss and tighter profit targets."
                                                     )
                                             else:
-                                                # Equal or higher timeframe reversal -> Confirmed Market Structure Shift!
-                                                opposing_to_invalidate.append((k, sig_tf, sig_dir))
+                                                # Equal or higher timeframe reversal -> Check Confidence Hierarchy Gate
+                                                if confidence < sig_conf:
+                                                    logger.info(
+                                                        f"Bias flip rejected: New {symbol} {tf} {direction} ({confidence}%) "
+                                                        f"has lower confidence than active opposing {sig_tf} {sig_dir} ({sig_conf}%). "
+                                                        f"Preserving active setup."
+                                                    )
+                                                    skip_dispatch = True
+                                                    break
+                                                else:
+                                                    # Equal or higher confidence -> Confirmed Market Structure Shift!
+                                                    opposing_to_invalidate.append((k, sig_tf, sig_dir))
                                         elif k == signal_key:
                                             # Same symbol, same timeframe, same direction
                                             sig_time = datetime.fromisoformat(sig['timestamp'])
@@ -212,6 +237,21 @@ class CryptoSentinelApp:
                                                     logger.info(override_msg)
                                                     if 'strategy_rationale' in signal_data:
                                                         signal_data['strategy_rationale'] = f"{override_msg}\n\n{signal_data['strategy_rationale']}"
+
+                                    if not skip_dispatch:
+                                        # Cross-check open paper positions in DB (covers post-reboot scenarios)
+                                        db_open_positions = await self.paper_trader.get_open_positions(symbol)
+                                        for pos in db_open_positions:
+                                            if pos['direction'] != direction:
+                                                pos_conf = pos.get('confidence_score', 0)
+                                                if confidence < pos_conf:
+                                                    logger.info(
+                                                        f"Bias flip rejected against open DB position: {symbol} {tf} {direction} ({confidence}%) "
+                                                        f"opposes active DB trade {pos['id']} ({pos['direction']} with {pos_conf}%). "
+                                                        f"Preserving active trade."
+                                                    )
+                                                    skip_dispatch = True
+                                                    break
 
                                     if skip_dispatch:
                                         continue
@@ -228,6 +268,13 @@ class CryptoSentinelApp:
                                         open_positions = await self.paper_trader.get_open_positions(symbol)
                                         for pos in open_positions:
                                             if pos['direction'] != direction:
+                                                pos_conf = pos.get('confidence_score', 0)
+                                                if confidence < pos_conf:
+                                                    logger.info(
+                                                        f"Preserving active paper trade {pos['id']} ({pos['direction']} with {pos_conf}%) "
+                                                        f"against weaker new reversal ({confidence}%)."
+                                                    )
+                                                    continue
                                                 logger.warning(
                                                     f"Force-closing opposing paper trade {pos['id']} ({pos['direction']}) "
                                                     f"due to {symbol} bias flip to {direction}"
@@ -330,11 +377,12 @@ class CryptoSentinelApp:
                     continue
                 
                 # Check Circuit Breaker
-                current_drawdown = await self.paper_trader.get_current_drawdown()
                 circuit_breaker_active = False
-                if current_drawdown > settings.max_drawdown_percent:
-                    logger.warning(f"CIRCUIT BREAKER TRIGGERED: Drawdown {current_drawdown:.2f}% exceeds {settings.max_drawdown_percent}%. Halting new signals.")
-                    circuit_breaker_active = True
+                if settings.enable_circuit_breaker:
+                    current_drawdown = await self.paper_trader.get_current_drawdown()
+                    if current_drawdown > settings.max_drawdown_percent:
+                        logger.warning(f"CIRCUIT BREAKER TRIGGERED: Drawdown {current_drawdown:.2f}% exceeds {settings.max_drawdown_percent}%. Halting new signals.")
+                        circuit_breaker_active = True
                 
                 # Fetch News
                 news_data = await self.news_aggregator.get_latest_news(limit=5)

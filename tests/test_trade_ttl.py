@@ -135,3 +135,69 @@ def test_paper_trader_expired_status_persisted(tmp_path):
 
     asyncio.run(run_test())
 
+
+def test_historical_candle_replay_resolves_win_after_downtime(tmp_path):
+    """
+    Verify that when app restarts after downtime, historical candles are replayed
+    and trades that reached TP1 & TP2 are resolved as WIN rather than falsely expired.
+    """
+    import asyncio
+    import aiosqlite
+    from engine.journal_manager import JournalManager
+
+    async def run_test():
+        db_file = str(tmp_path / "test_replay_win.db")
+        journal = JournalManager(db_path=db_file)
+        await journal.ensure_db_exists()
+
+        trader = PaperTradingService(db_path=db_file)
+
+        # Trade created 4 hours ago
+        trade_start = datetime.now(timezone.utc) - timedelta(hours=4)
+        trade_id = await journal.log_trade({
+            'timestamp': trade_start.isoformat(),
+            'symbol': 'ETH/USDT',
+            'direction': 'LONG',
+            'pattern_name': 'Bullish Engulfing',
+            'entry_price': 2500.0,
+            'sl_price': 2450.0,
+            'tp1_price': 2550.0,
+            'tp2_price': 2600.0,
+            'leverage': 5.0,
+            'ttl_mins': 1080,
+            'outcome': 'PENDING',
+            'confidence_score': 95
+        })
+
+        # Simulate 20 historical 5m candles after trade entry
+        # Candle 10 (at +50m) pumps to 2610, hitting TP1 and TP2
+        timestamps = [trade_start + timedelta(minutes=5 * i) for i in range(20)]
+        highs = [2510.0] * 20
+        lows = [2490.0] * 20
+        closes = [2505.0] * 20
+
+        # Candle 10 breaches both targets
+        highs[10] = 2620.0
+        closes[10] = 2610.0
+
+        df_candles = pd.DataFrame({
+            'timestamp': timestamps,
+            'open': [2500.0] * 20,
+            'high': highs,
+            'low': lows,
+            'close': closes,
+            'volume': [100.0] * 20
+        })
+
+        await trader.update_trades('ETH/USDT', df_candles)
+
+        async with aiosqlite.connect(db_file) as conn:
+            cursor = await conn.execute('SELECT status, exit_price, pnl_pct FROM trades WHERE trade_id = ?', (trade_id,))
+            row = await cursor.fetchone()
+            assert row is not None
+            assert row[0] == 'WIN_TP2'
+            assert row[1] == 2600.0
+            assert row[2] > 0.0
+
+    asyncio.run(run_test())
+

@@ -30,6 +30,9 @@ class SignalData(BaseModel):
     rr_ratio: float
     roe_sl: float
     roe_tp: float
+    roe_tp1: float = 0.0
+    roe_tp2: float = 0.0
+    overall_tp2_roe: float = 0.0
     atr_value: float
     target_resolution: str
     ttl_mins: int
