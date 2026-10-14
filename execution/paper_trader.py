@@ -2,14 +2,11 @@
 PaperTradingService manages simulated futures positions via SQLite in the unified sentinel.db.
 """
 
-import aiosqlite
 import logging
-import re
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 import pandas as pd
-from core.exceptions import DatabaseError
 from core.db import get_db_connection
 from core.config import settings
 
@@ -18,19 +15,28 @@ logger = logging.getLogger(__name__)
 class PaperTradingService:
     """Service to track simulated trading records."""
     
-    def __init__(self, db_path: str = "data/sentinel.db", initial_capital: float = 10000.0):
-        self.db_path = db_path
-        self.initial_capital = initial_capital
+    def __init__(self, db_path: str = "data/sentinel.db", initial_capital: float = 10000.0) -> None:
+        self.db_path: str = db_path
+        self.initial_capital: float = initial_capital
         
     async def init_db(self) -> None:
-        # Schema is now managed by JournalManager in sentinel.db
+        """Schema is managed by JournalManager in sentinel.db."""
         pass
             
-    async def log_trade(self, **kwargs) -> None:
-        # Trade logging is now entirely handled by JournalManager in sentinel.db
+    async def log_trade(self, **kwargs: Any) -> None:
+        """Trade logging is handled by JournalManager in sentinel.db."""
         pass
             
-    async def update_trades(self, symbol: str, df_5m, journal_manager=None, notifier=None, ai_evaluator=None, market_data=None) -> None:
+    async def update_trades(
+        self, 
+        symbol: str, 
+        df_5m: Optional[pd.DataFrame], 
+        journal_manager: Any = None, 
+        notifier: Any = None, 
+        ai_evaluator: Any = None, 
+        market_data: Any = None, 
+        state_manager: Any = None
+    ) -> None:
         """Check all pending trades for the given symbol against candles chronologically."""
         if df_5m is None or df_5m.empty: return
         
@@ -194,10 +200,22 @@ class PaperTradingService:
                             pct_move = (exit_price - entry) / entry if direction.upper() == 'LONG' else (entry - exit_price) / entry
                             gross_pnl_pct = pct_move * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
+                            status = 'EXPIRED_PROFIT' if net_pnl_pct > 0 else 'EXPIRED_LOSS'
                         
                         await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                         logger.info(f"Paper trade closed: {trade_id} {symbol} -> {status} with Net PnL {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%) (MAE: {mae:.2f}%, MFE: {mfe:.2f}%)")
+
+                        # Evict closed trade from active_signals state immediately so it no longer blocks future setups
+                        if state_manager and hasattr(state_manager, 'state') and isinstance(state_manager.state.get("active_signals"), dict):
+                            active_sigs = state_manager.state["active_signals"]
+                            keys_to_remove = [
+                                k for k, sig in active_sigs.items()
+                                if (sig.get('trade_id') == str(trade_id)) or (k.startswith(f"{symbol}_") and sig.get('direction') == direction)
+                            ]
+                            for k in keys_to_remove:
+                                del active_sigs[k]
+                                logger.info(f"Evicted closed trade {trade_id} ({k}) from active_signals state (Outcome: {status}).")
 
                         # Trigger Post-Trade Forensic Autopsy on LOSS
                         if status == 'LOSS' and journal_manager is not None and ai_evaluator is not None:
@@ -256,6 +274,47 @@ class PaperTradingService:
         except Exception as e:
             logger.error(f"Failed to fetch open positions for {symbol}: {e}")
             return []
+
+    async def is_trade_active(self, symbol: str, trade_id: Optional[str] = None, direction: Optional[str] = None) -> Optional[bool]:
+        """
+        Check if a trade is currently active (PENDING).
+        Returns:
+            True: If the trade is currently PENDING in the DB.
+            False: If the trade exists and has completed (e.g. LOSS, WIN_TP1, WIN_TP2, EXPIRED, REVERSAL_FLIP)
+                   or if there are closed trades but zero PENDING trades for this symbol/direction.
+            None: If no trade records exist for this symbol/direction.
+        """
+        try:
+            async with get_db_connection(self.db_path) as conn:
+                if trade_id:
+                    cursor = await conn.execute(
+                        'SELECT status FROM trades WHERE trade_id = ?', (trade_id,)
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        return bool(row[0] == 'PENDING')
+
+                if direction:
+                    cursor = await conn.execute(
+                        'SELECT status FROM trades WHERE symbol = ? AND direction = ? ORDER BY timestamp DESC LIMIT 1',
+                        (symbol, direction)
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        if row[0] == 'PENDING':
+                            return True
+                        else:
+                            c2 = await conn.execute(
+                                'SELECT COUNT(*) FROM trades WHERE symbol = ? AND direction = ? AND status = "PENDING"',
+                                (symbol, direction)
+                            )
+                            row_count = await c2.fetchone()
+                            pending_count = int(row_count[0]) if row_count else 0
+                            return pending_count > 0
+                return None
+        except Exception as e:
+            logger.error(f"Error checking is_trade_active for {symbol} ({trade_id}): {e}")
+            return None
 
     async def move_sl_to_be(self, trade_id: str, entry_price: float):
         try:

@@ -48,6 +48,7 @@ class CryptoSentinelApp:
         )
         self.ai_evaluator = AIEvaluatorService(
             api_key=settings.gemini_api_key,
+            model_name=settings.gemini_model_name,
             timeout=settings.llm_timeout_seconds
         )
         self.notifier = NotificationService(
@@ -100,7 +101,7 @@ class CryptoSentinelApp:
             if current_price_5m > 0:
                 # Update Paper Trades once per symbol (optimization to prevent multi-timeframe redundant DB calls)
                 await self.paper_trader.update_trades(
-                    symbol, df_5m, self.journal_manager, self.notifier, self.ai_evaluator, self.market_data
+                    symbol, df_5m, self.journal_manager, self.notifier, self.ai_evaluator, self.market_data, self.state_manager
                 )
 
             for tf in settings.timeframes:
@@ -151,7 +152,7 @@ class CryptoSentinelApp:
                             try:
                                 ai_data = json.loads(ai_response)
                                 direction = ai_data.get('trade_direction', 'NEUTRAL')
-                                confidence = int(ai_data.get('final_confidence_rating', 0))
+                                confidence = round(float(ai_data.get('final_confidence_rating', 0.0)), 1)
                                 verdict = ai_data.get('overall_verdict', 'SKIP').upper()
                                 is_degraded = ai_data.get('is_degraded', False)
                                 
@@ -194,6 +195,24 @@ class CryptoSentinelApp:
                                         sig_tf = sig.get('timeframe', k.split('_')[-1])
                                         sig_rank = TF_RANKS.get(sig_tf, 2)
                                         sig_conf = sig.get('confidence', 0)
+                                        
+                                        # Verify if the trade backing this active signal has already closed (e.g. SL or TP hit)
+                                        if hasattr(self.paper_trader, 'is_trade_active') and callable(getattr(self.paper_trader, 'is_trade_active')):
+                                            try:
+                                                is_active = await self.paper_trader.is_trade_active(
+                                                    symbol=symbol,
+                                                    trade_id=sig.get('trade_id'),
+                                                    direction=sig_dir
+                                                )
+                                                if is_active is False:
+                                                    logger.info(
+                                                        f"Pruning inactive signal from state: {k} {sig_dir} ({sig_conf}%) "
+                                                        f"because its trade is already closed in database."
+                                                    )
+                                                    del active_signals[k]
+                                                    continue
+                                            except Exception as e:
+                                                logger.debug(f"Could not verify trade active status for {k}: {e}")
                                         
                                         # Check for conflicting direction across timeframes
                                         if sig_dir and sig_dir != direction:
@@ -299,15 +318,6 @@ class CryptoSentinelApp:
                                     else:
                                         signal_data['dispatch_channels'] = ["STANDARD"]
 
-                                    # Update Active Signals State
-                                    active_signals[signal_key] = {
-                                        'direction': direction,
-                                        'confidence': confidence,
-                                        'timestamp': now.isoformat(),
-                                        'timeframe': tf,
-                                        'ttl_mins': signal_data.get('ttl_mins', settings.trade_ttl_minutes)
-                                    }
-
                                     # Log to Journal Manager (which now uses sentinel.db unified table)
                                     trade_id = await self.journal_manager.log_trade({
                                         'timestamp': signal_data['timestamp'],
@@ -325,6 +335,16 @@ class CryptoSentinelApp:
                                         'scoring_checklist': ai_data.get('scoring_checklist', [])
                                     })
                                     signal_data['trade_id'] = trade_id
+
+                                    # Update Active Signals State
+                                    active_signals[signal_key] = {
+                                        'trade_id': trade_id,
+                                        'direction': direction,
+                                        'confidence': confidence,
+                                        'timestamp': now.isoformat(),
+                                        'timeframe': tf,
+                                        'ttl_mins': signal_data.get('ttl_mins', settings.trade_ttl_minutes)
+                                    }
                                     current_drawdown = await self.paper_trader.get_current_drawdown()
                                     await self.notifier.notify_signal(symbol, signal_data, ai_response, current_drawdown)
                                 else:
@@ -424,7 +444,7 @@ async def _supervised_task(coro, task_name: str) -> None:
     except Exception as e:
         logger.error(f"Unhandled error in {task_name}: {e}", exc_info=True)
 
-async def main():
+async def main() -> None:
     logger.info("Starting Advanced Crypto Sentinel (Refactored)...")
     app = CryptoSentinelApp()
     await app.initialize()
@@ -438,10 +458,20 @@ async def main():
         
     try:
         await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        logger.info("Sentinel stopped by user.")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Sentinel shutdown initiated by user.")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
+    finally:
+        logger.info("Disposing background tasks and releasing resources...")
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await app.market_data.close()
+        if app.notifier.bot and app.notifier.bot.session:
+            await app.notifier.bot.session.close()
+        logger.info("Sentinel shutdown complete.")
 
 if __name__ == "__main__":
     try:

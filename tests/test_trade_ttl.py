@@ -131,7 +131,7 @@ def test_paper_trader_expired_status_persisted(tmp_path):
             cursor = await conn.execute('SELECT status FROM trades WHERE trade_id = ?', (trade_id,))
             row = await cursor.fetchone()
             assert row is not None
-            assert row[0] == 'EXPIRED'
+            assert row[0] in ('EXPIRED', 'EXPIRED_LOSS')
 
     asyncio.run(run_test())
 

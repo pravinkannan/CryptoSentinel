@@ -19,7 +19,7 @@ def signal_generator():
     """Returns a standard SignalGeneratorService instance."""
     return SignalGeneratorService(
         percentage_trigger=2.0,
-        static_alerts=[],
+        static_alerts={},
         atr_period=14,
         sl_atr_multiplier=1.5,
         target_rr_ratio=2.0

@@ -116,7 +116,7 @@ def test_paper_trader_invalidation_by_reversal(tmp_path):
 
         # 2. Force close on reversal
         await paper_trader.close_position(
-            trade_id=str(trade_id),
+            trade_id=trade_id,
             exit_price=83050.0,
             reason="INVALIDATED_BY_REVERSAL"
         )

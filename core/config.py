@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     gemini_api_key: str = Field(default="", description="Google Gemini API Key")
+    gemini_model_name: str = Field(default="gemini-3.8-flash", description="Google Gemini model identifier")
     telegram_bot_token: str = Field(default="", description="Telegram Bot Token")
     telegram_chat_id: str = Field(default="", description="Telegram Chat ID")
     cryptopanic_api_key: str = Field(default="", description="CryptoPanic API Key")

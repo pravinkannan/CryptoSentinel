@@ -267,6 +267,7 @@ def test_telegram_polling_reconnection_on_network_error():
     async def run_test():
         from notifications.notifier import NotificationService
         from aiogram.exceptions import TelegramNetworkError
+        from aiogram.methods import GetMe
 
         notifier = NotificationService(telegram_token="123456:ABC-DEF", telegram_chat_id="123456")
         notifier.bot = MagicMock()
@@ -277,10 +278,10 @@ def test_telegram_polling_reconnection_on_network_error():
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise TelegramNetworkError(method="getMe", message="ClientConnectorError: Cannot connect to host")
+                raise TelegramNetworkError(method=GetMe(), message="ClientConnectorError: Cannot connect to host")
             raise asyncio.CancelledError()
 
-        notifier.dp.start_polling = mock_start_polling
+        setattr(notifier.dp, "start_polling", mock_start_polling)
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await notifier.start_polling()

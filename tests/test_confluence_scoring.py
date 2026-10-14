@@ -5,7 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 from engine.signal_generator import SignalGeneratorService
-from engine.ai_evaluator import AIEvaluatorService
+from engine.ai_evaluator import AIEvaluatorService, evaluate_confluence_score
 
 
 def create_mock_ai_evaluator(ai_payload=None):
@@ -14,7 +14,7 @@ def create_mock_ai_evaluator(ai_payload=None):
     default_payload = {
         "trade_direction": "LONG",
         "overall_verdict": "APPROVE",
-        "strategy_analysis": "Automated test audit.",
+        "strategy_analysis": "Automated parametric test audit.",
         "live_news_penalty": 0,
         "institutional_wall_penalty": 0,
         "audit_notes": []
@@ -27,7 +27,7 @@ def create_mock_ai_evaluator(ai_payload=None):
 
 
 # ==============================================================================
-# 1. HTF TREND CALCULATION TESTS (Positive, Negative, Fallback)
+# 1. HTF TREND CALCULATION TESTS
 # ==============================================================================
 
 def test_htf_trend_calculation_ema200_and_fallback():
@@ -69,459 +69,780 @@ def test_htf_trend_calculation_ema200_and_fallback():
 
 
 # ==============================================================================
-# 2. ISOLATED CONFLUENCE RULES (Positive and Negative Testing)
+# 2. STAGE 1: HARD BINARY SANITY GATE (THE CIRCUIT BREAKER)
 # ==============================================================================
 
-def test_rule_macro_trend_alignment():
-    """Rule 1: Macro Trend Alignment (+5%) for Long and Short."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE LONG: 1H & 4H Macro Up
-        sig_long = {
-            'direction': 'Bullish',
-            'htf_trend': 'Macro Uptrend (Bullish)',
-            'htf_4h_trend': 'Macro Uptrend (Bullish)',
-            'patterns': ['Engulfing']
-        }
-        raw_l = await ai.evaluate_signal('BTC/USDT', sig_long, news_data=[])
-        assert raw_l is not None
-        res_l = json.loads(raw_l)
-        assert "+5% Macro Trend Alignment" in res_l['scoring_checklist']
-        assert res_l['final_confidence_rating'] == 80  # 75 base + 5
-
-        # POSITIVE SHORT: 1H & 4H Macro Down
-        sig_short = {
-            'direction': 'Bearish',
-            'htf_trend': 'Macro Downtrend (Bearish)',
-            'htf_4h_trend': 'Macro Downtrend (Bearish)',
-            'patterns': ['Engulfing']
-        }
-        raw_s = await ai.evaluate_signal('BTC/USDT', sig_short, news_data=[])
-        assert raw_s is not None
-        res_s = json.loads(raw_s)
-        assert "+5% Macro Trend Alignment" in res_s['scoring_checklist']
-        assert res_s['final_confidence_rating'] == 80
-
-        # NEGATIVE: 1H Up but 4H Down (Mixed)
-        sig_mixed = {
-            'direction': 'Bullish',
-            'htf_trend': 'Macro Uptrend (Bullish)',
-            'htf_4h_trend': 'Macro Downtrend (Bearish)',
-            'patterns': ['Engulfing']
-        }
-        raw_m = await ai.evaluate_signal('BTC/USDT', sig_mixed, news_data=[])
-        assert raw_m is not None
-        res_m = json.loads(raw_m)
-        assert "+5% Macro Trend Alignment" not in res_m['scoring_checklist']
-
-    asyncio.run(run())
+def test_stage_1_macro_4h_conflict_direct_flag():
+    """Circuit Breaker 1: Explicit macro_4h_conflict=True halts evaluation."""
+    sig = {
+        'direction': 'LONG',
+        'macro_4h_conflict': True,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    result = evaluate_confluence_score("BTC/USDT", sig)
+    assert result["tier"] == "REJECTED"
+    assert result["final_score"] == 0.0
+    assert result["eval_trace"]["stage1_passed"] is False
+    assert result["eval_trace"]["circuit_breaker"] == "4H Macro Conflict"
 
 
-def test_rule_btc_global_trend_support():
-    """Rule 2: BTC Global Trend Support (+5%)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
+def test_stage_1_macro_4h_conflict_inferred_from_htf():
+    """Circuit Breaker 1: Inferred 4H macro conflict for Long and Short."""
+    # Long against Macro Downtrend
+    sig_long = {
+        'direction': 'LONG',
+        'htf_4h_trend': 'Macro Downtrend (Bearish)',
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_l = evaluate_confluence_score("BTC/USDT", sig_long)
+    assert res_l["tier"] == "REJECTED"
+    assert res_l["final_score"] == 0.0
+    assert res_l["eval_trace"]["stage1_passed"] is False
 
-        # POSITIVE LONG
-        sig_long = {'direction': 'Bullish', 'btc_trend': 'Macro Uptrend (Bullish)', 'patterns': ['Hammer']}
-        res_l = json.loads(await ai.evaluate_signal('ETH/USDT', sig_long, news_data=[]))
-        assert "+5% BTC Global Trend Support" in res_l['scoring_checklist']
-
-        # POSITIVE SHORT
-        sig_short = {'direction': 'Bearish', 'btc_trend': 'Macro Downtrend (Bearish)', 'patterns': ['Hammer']}
-        res_s = json.loads(await ai.evaluate_signal('ETH/USDT', sig_short, news_data=[]))
-        assert "+5% BTC Global Trend Support" in res_s['scoring_checklist']
-
-        # NEGATIVE: BTC opposes direction
-        sig_neg = {'direction': 'Bullish', 'btc_trend': 'Macro Downtrend (Bearish)', 'patterns': ['Hammer']}
-        res_n = json.loads(await ai.evaluate_signal('ETH/USDT', sig_neg, news_data=[]))
-        assert "+5% BTC Global Trend Support" not in res_n['scoring_checklist']
-
-    asyncio.run(run())
-
-
-def test_rule_order_book_dominance():
-    """Rule 3: Order Book Dominance (+5%) (Imbalance >= 1.5 for Long, <= 0.66 for Short)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE LONG (imbalance = 1.5 boundary)
-        sig_l1 = {'direction': 'Bullish', 'imbalance_ratio': 1.5, 'patterns': ['Hammer']}
-        res_l1 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_l1, news_data=[]))
-        assert "+5% Order Book Dominance" in res_l1['scoring_checklist']
-
-        # POSITIVE SHORT (imbalance = 0.66 boundary)
-        sig_s1 = {'direction': 'Bearish', 'imbalance_ratio': 0.66, 'patterns': ['Hammer']}
-        res_s1 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_s1, news_data=[]))
-        assert "+5% Order Book Dominance" in res_s1['scoring_checklist']
-
-        # NEGATIVE LONG (imbalance = 1.49, below 1.5)
-        sig_l2 = {'direction': 'Bullish', 'imbalance_ratio': 1.49, 'patterns': ['Hammer']}
-        res_l2 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_l2, news_data=[]))
-        assert "+5% Order Book Dominance" not in res_l2['scoring_checklist']
-
-        # NEGATIVE SHORT (imbalance = 0.67, above 0.66)
-        sig_s2 = {'direction': 'Bearish', 'imbalance_ratio': 0.67, 'patterns': ['Hammer']}
-        res_s2 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_s2, news_data=[]))
-        assert "+5% Order Book Dominance" not in res_s2['scoring_checklist']
-
-    asyncio.run(run())
+    # Short against Macro Uptrend
+    sig_short = {
+        'direction': 'SHORT',
+        'htf_4h_trend': 'Macro Uptrend (Bullish)',
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_s = evaluate_confluence_score("BTC/USDT", sig_short)
+    assert res_s["tier"] == "REJECTED"
+    assert res_s["final_score"] == 0.0
+    assert res_s["eval_trace"]["stage1_passed"] is False
 
 
-def test_rule_exceptional_risk_reward():
-    """Rule 4: Exceptional Risk/Reward (+5%) (RR >= 2.5)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
+def test_stage_1_rsi_exhaustion_circuit_breaker():
+    """Circuit Breaker 2: RSI > 75 for Long, RSI < 25 for Short."""
+    # Long with RSI 76.0 (exhausted)
+    sig_long_ex = {
+        'direction': 'LONG',
+        'rsi_14': 76.0,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_l = evaluate_confluence_score("BTC/USDT", sig_long_ex)
+    assert res_l["tier"] == "REJECTED"
+    assert res_l["final_score"] == 0.0
+    assert "RSI Exhaustion" in res_l["eval_trace"]["circuit_breaker"]
 
-        # POSITIVE (RR = 2.5 boundary)
-        sig_pos = {'direction': 'Bullish', 'rr_ratio': 2.5, 'patterns': ['Hammer']}
-        res_p = json.loads(await ai.evaluate_signal('BTC/USDT', sig_pos, news_data=[]))
-        assert "+5% Exceptional Risk/Reward" in res_p['scoring_checklist']
+    # Long with RSI 74.5 (not exhausted -> passes Stage 1)
+    sig_long_ok = {
+        'direction': 'LONG',
+        'rsi_14': 74.5,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_ok = evaluate_confluence_score("BTC/USDT", sig_long_ok)
+    assert res_ok["eval_trace"]["stage1_passed"] is True
+    assert res_ok["final_score"] > 0.0
 
-        # NEGATIVE (RR = 2.49)
-        sig_neg = {'direction': 'Bullish', 'rr_ratio': 2.49, 'patterns': ['Hammer']}
-        res_n = json.loads(await ai.evaluate_signal('BTC/USDT', sig_neg, news_data=[]))
-        assert "+5% Exceptional Risk/Reward" not in res_n['scoring_checklist']
-
-    asyncio.run(run())
-
-
-def test_rule_funding_rate_tailwind():
-    """Rule 5: Funding Rate Tailwind (+5%) (Negative funding for Long, Positive for Short)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE LONG (fr = -0.01%)
-        sig_l = {'direction': 'Bullish', 'funding_rate': -0.01, 'patterns': ['Hammer']}
-        res_l = json.loads(await ai.evaluate_signal('BTC/USDT', sig_l, news_data=[]))
-        assert "+5% Funding Rate Tailwind" in res_l['scoring_checklist']
-
-        # POSITIVE SHORT (fr = +0.02%)
-        sig_s = {'direction': 'Bearish', 'funding_rate': 0.02, 'patterns': ['Hammer']}
-        res_s = json.loads(await ai.evaluate_signal('BTC/USDT', sig_s, news_data=[]))
-        assert "+5% Funding Rate Tailwind" in res_s['scoring_checklist']
-
-        # NEGATIVE LONG (fr = 0.00% or positive)
-        sig_n = {'direction': 'Bullish', 'funding_rate': 0.01, 'patterns': ['Hammer']}
-        res_n = json.loads(await ai.evaluate_signal('BTC/USDT', sig_n, news_data=[]))
-        assert "+5% Funding Rate Tailwind" not in res_n['scoring_checklist']
-
-    asyncio.run(run())
-
-
-def test_rule_multiple_pattern_confluence():
-    """Rule 6: Multiple Pattern Confluence (+5%) (len(patterns) > 1)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE (2 patterns)
-        sig_p = {'direction': 'Bullish', 'patterns': ['Bullish Engulfing', 'Bullish Belthold']}
-        res_p = json.loads(await ai.evaluate_signal('BTC/USDT', sig_p, news_data=[]))
-        assert "+5% Multiple Pattern Confluence" in res_p['scoring_checklist']
-
-        # NEGATIVE (1 pattern)
-        sig_1 = {'direction': 'Bullish', 'patterns': ['Bullish Engulfing']}
-        res_1 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_1, news_data=[]))
-        assert "+5% Multiple Pattern Confluence" not in res_1['scoring_checklist']
-
-        # NEGATIVE (0 patterns)
-        sig_0 = {'direction': 'Bullish', 'patterns': []}
-        res_0 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_0, news_data=[]))
-        assert "+5% Multiple Pattern Confluence" not in res_0['scoring_checklist']
-
-    asyncio.run(run())
+    # Short with RSI 24.0 (exhausted)
+    sig_short_ex = {
+        'direction': 'SHORT',
+        'rsi_14': 24.0,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_s = evaluate_confluence_score("ETH/USDT", sig_short_ex)
+    assert res_s["tier"] == "REJECTED"
+    assert res_s["final_score"] == 0.0
+    assert "RSI Exhaustion" in res_s["eval_trace"]["circuit_breaker"]
 
 
-def test_rule_magnetic_liquidity_pools():
-    """Rule 7: Magnetic Liquidity Pools (+5%)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
+def test_stage_1_anemic_volume_trap_circuit_breaker():
+    """Circuit Breaker 3: Volume < 0.55 * SMA AND key_level_rejection == False."""
+    # Anemic volume without key level rejection -> Circuit Breaker trips
+    sig_trap = {
+        'direction': 'LONG',
+        'volume': 500.0,
+        'vol_sma_20': 1000.0,  # 0.50x < 0.55x
+        'key_level_rejection': False
+    }
+    res_trap = evaluate_confluence_score("SOL/USDT", sig_trap)
+    assert res_trap["tier"] == "REJECTED"
+    assert res_trap["final_score"] == 0.0
+    assert res_trap["eval_trace"]["stage1_passed"] is False
+    assert res_trap["eval_trace"]["circuit_breaker"] == "Anemic Volume Trap"
 
-        # POSITIVE LONG (Short liquidation pool above entry)
-        sig_l = {'direction': 'Bullish', 'short_liq_zones': '84000.0, 84500.0', 'patterns': ['Hammer']}
-        res_l = json.loads(await ai.evaluate_signal('BTC/USDT', sig_l, news_data=[]))
-        assert "+5% Magnetic Liquidity Pools" in res_l['scoring_checklist']
+    # Anemic volume BUT key_level_rejection == True -> Passes Stage 1
+    sig_saved = {
+        'direction': 'LONG',
+        'volume': 500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.10
+    }
+    res_saved = evaluate_confluence_score("SOL/USDT", sig_saved)
+    assert res_saved["eval_trace"]["stage1_passed"] is True
+    assert res_saved["final_score"] > 0.0
 
-        # POSITIVE SHORT (Long liquidation pool below entry)
-        sig_s = {'direction': 'Bearish', 'long_liq_zones': '80000.0, 79500.0', 'patterns': ['Hammer']}
-        res_s = json.loads(await ai.evaluate_signal('BTC/USDT', sig_s, news_data=[]))
-        assert "+5% Magnetic Liquidity Pools" in res_s['scoring_checklist']
-
-        # NEGATIVE (Empty or None)
-        sig_n = {'direction': 'Bullish', 'short_liq_zones': 'None', 'patterns': ['Hammer']}
-        res_n = json.loads(await ai.evaluate_signal('BTC/USDT', sig_n, news_data=[]))
-        assert "+5% Magnetic Liquidity Pools" not in res_n['scoring_checklist']
-
-    asyncio.run(run())
-
-
-def test_rule_order_book_liquidity_magnets():
-    """Rule 8: Order Book Liquidity Magnet (+5%)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE LONG: Ask pool above current close
-        sig_l = {
-            'direction': 'Bullish',
-            'close': 82000.0,
-            'liquidity_magnets': [{'side': 'ASK', 'price': 83500.0}],
-            'patterns': ['Hammer']
-        }
-        res_l = json.loads(await ai.evaluate_signal('BTC/USDT', sig_l, news_data=[]))
-        assert "+5% Order Book Liquidity Magnet" in res_l['scoring_checklist']
-
-        # POSITIVE SHORT: Bid pool below current close
-        sig_s = {
-            'direction': 'Bearish',
-            'close': 82000.0,
-            'liquidity_magnets': [{'side': 'BID', 'price': 80500.0}],
-            'patterns': ['Hammer']
-        }
-        res_s = json.loads(await ai.evaluate_signal('BTC/USDT', sig_s, news_data=[]))
-        assert "+5% Order Book Liquidity Magnet" in res_s['scoring_checklist']
-
-        # NEGATIVE LONG: Bid pool below current close (Defensive shield, not target pull)
-        sig_neg = {
-            'direction': 'Bullish',
-            'close': 82000.0,
-            'liquidity_magnets': [{'side': 'BID', 'price': 81500.0}],
-            'patterns': ['Hammer']
-        }
-        res_neg = json.loads(await ai.evaluate_signal('BTC/USDT', sig_neg, news_data=[]))
-        assert "+5% Order Book Liquidity Magnet" not in res_neg['scoring_checklist']
-
-    asyncio.run(run())
-
-
-def test_rule_open_interest_expansion():
-    """Rule 9: Open Interest Expansion (+5%) (oi_delta > 1.5% and Expanding)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE (delta > 1.5 and expanding)
-        sig_p = {'direction': 'Bullish', 'oi_delta_pct': 1.8, 'oi_direction': 'Expanding', 'patterns': ['Hammer']}
-        res_p = json.loads(await ai.evaluate_signal('BTC/USDT', sig_p, news_data=[]))
-        assert "+5% Open Interest Expansion" in res_p['scoring_checklist']
-
-        # NEGATIVE (delta <= 1.5)
-        sig_n1 = {'direction': 'Bullish', 'oi_delta_pct': 1.4, 'oi_direction': 'Expanding', 'patterns': ['Hammer']}
-        res_n1 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_n1, news_data=[]))
-        assert "+5% Open Interest Expansion" not in res_n1['scoring_checklist']
-
-        # NEGATIVE (delta > 1.5 but Declining)
-        sig_n2 = {'direction': 'Bullish', 'oi_delta_pct': 2.5, 'oi_direction': 'Declining', 'patterns': ['Hammer']}
-        res_n2 = json.loads(await ai.evaluate_signal('BTC/USDT', sig_n2, news_data=[]))
-        assert "+5% Open Interest Expansion" not in res_n2['scoring_checklist']
-
-    asyncio.run(run())
-
-
-def test_rule_phase_2_momentum_volume_expansion():
-    """Rule 10: Phase 2 Momentum Volume Expansion (+10%)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE: Regime is HIGH_VOLATILITY and Phase is PHASE 2
-        sig = {'direction': 'Bullish', 'patterns': ['Marubozu']}
-        regime_p2 = {'regime': 'HIGH_VOLATILITY', 'phase': 'PHASE 2'}
-        res = json.loads(await ai.evaluate_signal('BTC/USDT', sig, news_data=[], regime_data=regime_p2))
-        assert "+10% PHASE 2 Momentum Volume Expansion" in res['scoring_checklist']
-        assert res['final_confidence_rating'] == 85  # 75 base + 10
-
-        # NEGATIVE: Normal regime
-        regime_norm = {'regime': 'NORMAL', 'phase': 'NORMAL'}
-        res_norm = json.loads(await ai.evaluate_signal('BTC/USDT', sig, news_data=[], regime_data=regime_norm))
-        assert "+10% PHASE 2 Momentum Volume Expansion" not in res_norm['scoring_checklist']
-
-    asyncio.run(run())
+    # Normal volume (>= 0.55x SMA) without key level rejection -> Passes Stage 1
+    sig_normal = {
+        'direction': 'LONG',
+        'volume': 600.0,
+        'vol_sma_20': 1000.0,  # 0.60x >= 0.55x
+        'key_level_rejection': False
+    }
+    res_normal = evaluate_confluence_score("SOL/USDT", sig_normal)
+    assert res_normal["eval_trace"]["stage1_passed"] is True
 
 
 # ==============================================================================
-# 3. DEDUCTIONS & PENALTIES TESTING (Positive and Negative)
+# 3. STAGE 2: PARAMETRIC CONTINUOUS SCORING RULES
 # ==============================================================================
 
-def test_deduction_macro_trend_conflict():
-    """Deduction: -15% Macro Trend Conflict for counter-trend trades."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-
-        # POSITIVE TRIGGER: Shorting into a 4H Macro Uptrend
-        sig_short_conflict = {
-            'direction': 'Bearish',
-            'htf_4h_trend': 'Macro Uptrend (Bullish)',
-            'patterns': ['Engulfing']
-        }
-        res_sc = json.loads(await ai.evaluate_signal('BTC/USDT', sig_short_conflict, news_data=[]))
-        assert "-15% Macro Trend Conflict" in res_sc['scoring_checklist']
-        # 75 base - 15 deduction = 60%
-        assert res_sc['final_confidence_rating'] == 60
-
-        # POSITIVE TRIGGER: Longing into a 4H Macro Downtrend
-        sig_long_conflict = {
-            'direction': 'Bullish',
-            'htf_4h_trend': 'Macro Downtrend (Bearish)',
-            'patterns': ['Engulfing']
-        }
-        res_lc = json.loads(await ai.evaluate_signal('BTC/USDT', sig_long_conflict, news_data=[]))
-        assert "-15% Macro Trend Conflict" in res_lc['scoring_checklist']
-        assert res_lc['final_confidence_rating'] == 60
-
-        # NEGATIVE (NO CONFLICT): Longing in a 4H Macro Uptrend
-        sig_aligned = {
-            'direction': 'Bullish',
-            'htf_4h_trend': 'Macro Uptrend (Bullish)',
-            'patterns': ['Engulfing']
-        }
-        res_al = json.loads(await ai.evaluate_signal('BTC/USDT', sig_aligned, news_data=[]))
-        assert "-15% Macro Trend Conflict" not in res_al['scoring_checklist']
-
-    asyncio.run(run())
+def test_stage_2_base_score():
+    """Base score begins at 68.0 without any modifiers."""
+    sig = {
+        'direction': 'LONG',
+        'volume': 1000.0,
+        'vol_sma_20': 1000.0,  # 1.0x ratio -> 0 vol_points
+        'open': 100.0,
+        'close': 102.0,
+        'key_level_rejection': False
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    assert res["eval_trace"]["base_score"] == 68.0
+    assert res["eval_trace"]["vol_points"] == 0.0
+    assert res["eval_trace"]["level_points"] == 0.0
+    assert res["final_score"] == 68.0
+    assert res["tier"] == "REJECTED"  # Below 80.0% threshold
 
 
-def test_deduction_degraded_pattern():
-    """Deduction: -10% Degraded Pattern for decayed win rate (<40%)."""
-    async def run():
-        ai = create_mock_ai_evaluator()
+def test_stage_2_dynamic_institutional_volume_formula():
+    """Formula: vol_points = min(12.0, max(0.0, ((volume / vol_sma_20) - 1.0) * 8.0))."""
+    # 1.5x volume: (1.5 - 1.0) * 8.0 = 4.0 points
+    sig_1_5x = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_1_5x = evaluate_confluence_score("BTC/USDT", sig_1_5x)
+    assert res_1_5x["eval_trace"]["vol_points"] == 4.0
 
-        # POSITIVE: Pattern is DEGRADED
-        sig_deg = {
-            'direction': 'Bullish',
-            'pattern_drift_status': 'DEGRADED',
-            'patterns': ['Hammer']
-        }
-        res_d = json.loads(await ai.evaluate_signal('BTC/USDT', sig_deg, news_data=[]))
-        assert "-10% Degraded Pattern" in res_d['scoring_checklist']
-        assert res_d['is_degraded'] is True
-        # 75 base - 10 deduction = 65%
-        assert res_d['final_confidence_rating'] == 65
+    # 2.5x volume: (2.5 - 1.0) * 8.0 = 12.0 points (max limit)
+    sig_2_5x = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_2_5x = evaluate_confluence_score("BTC/USDT", sig_2_5x)
+    assert res_2_5x["eval_trace"]["vol_points"] == 12.0
 
-        # NEGATIVE: Pattern is HEALTHY
-        sig_h = {
-            'direction': 'Bullish',
-            'pattern_drift_status': 'HEALTHY',
-            'patterns': ['Hammer']
-        }
-        res_h = json.loads(await ai.evaluate_signal('BTC/USDT', sig_h, news_data=[]))
-        assert "-10% Degraded Pattern" not in res_h['scoring_checklist']
-        assert res_h['is_degraded'] is False
+    # 3.0x volume clamped at +12.0%
+    sig_3x = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 3000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_3x = evaluate_confluence_score("BTC/USDT", sig_3x)
+    assert res_3x["eval_trace"]["vol_points"] == 12.0
 
-    asyncio.run(run())
+    # Sub-SMA volume (0.9x): max(0.0, (0.9 - 1.0) * 8.0) = 0.0 points
+    sig_sub = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 900.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_sub = evaluate_confluence_score("BTC/USDT", sig_sub)
+    assert res_sub["eval_trace"]["vol_points"] == 0.0
 
 
-def test_deductions_from_ai_audit():
-    """Verify live news penalty and institutional wall penalty from AI response."""
-    async def run():
-        ai = create_mock_ai_evaluator({
-            "trade_direction": "LONG",
-            "overall_verdict": "APPROVE",
-            "strategy_analysis": "News conflict detected.",
-            "live_news_penalty": -20,
-            "institutional_wall_penalty": -10,
-            "audit_notes": ["Regulatory crackdown", "Massive ask wall"]
-        })
+def test_stage_2_volume_directional_fix():
+    """Directional Fix: Only award volume points if candle closed strongly in trade direction."""
+    # Long trade with red candle (close < open) -> 0 volume points despite 2.0x volume!
+    sig_long_red = {
+        'direction': 'LONG',
+        'open': 105.0,
+        'close': 100.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_lr = evaluate_confluence_score("BTC/USDT", sig_long_red)
+    assert res_lr["eval_trace"]["vol_points"] == 0.0
+    assert res_lr["eval_trace"]["breakdown"]["directional_aligned"] is False
 
-        sig = {'direction': 'Bullish', 'patterns': ['Hammer']}
-        res = json.loads(await ai.evaluate_signal('BTC/USDT', sig, news_data=[]))
-        checklist = res['scoring_checklist']
-        assert "-20% Live News Conflict" in checklist
-        assert "-10% Institutional Wall Blocking" in checklist
-        # 75 base - 20 - 10 = 45%
-        assert res['final_confidence_rating'] == 45
+    # Short trade with green candle (close > open) -> 0 volume points
+    sig_short_green = {
+        'direction': 'SHORT',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_sg = evaluate_confluence_score("BTC/USDT", sig_short_green)
+    assert res_sg["eval_trace"]["vol_points"] == 0.0
+    assert res_sg["eval_trace"]["breakdown"]["directional_aligned"] is False
 
-    asyncio.run(run())
+    # Short trade with red candle (close < open) -> Awards full points
+    sig_short_red = {
+        'direction': 'SHORT',
+        'open': 105.0,
+        'close': 100.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_sr = evaluate_confluence_score("BTC/USDT", sig_short_red)
+    assert res_sr["eval_trace"]["vol_points"] == 8.0
+    assert res_sr["eval_trace"]["breakdown"]["directional_aligned"] is True
+
+
+def test_stage_2_structural_level_precision_formula_and_rejection_fix():
+    """
+    Structural Level Precision:
+    - Rejection Fix: Only award if key_level_rejection == True
+    - level_points = max(0.0, 10.0 * (1.0 - (dist / 0.30))) if dist <= 0.30 else 0.0
+    """
+    # Exact pin (dist = 0.0): 10.0 points
+    sig_exact = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0
+    }
+    res_exact = evaluate_confluence_score("BTC/USDT", sig_exact)
+    assert res_exact["eval_trace"]["level_points"] == 10.0
+
+    # Halfway (dist = 0.15): 10.0 * (1 - 0.5) = 5.0 points
+    sig_half = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.15
+    }
+    res_half = evaluate_confluence_score("BTC/USDT", sig_half)
+    assert res_half["eval_trace"]["level_points"] == 5.0
+
+    # At boundary (dist = 0.30): 0.0 points
+    sig_boundary = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.30
+    }
+    res_boundary = evaluate_confluence_score("BTC/USDT", sig_boundary)
+    assert res_boundary["eval_trace"]["level_points"] == 0.0
+
+    # Outside threshold (dist = 0.40): 0.0 points
+    sig_outside = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.40
+    }
+    res_outside = evaluate_confluence_score("BTC/USDT", sig_outside)
+    assert res_outside["eval_trace"]["level_points"] == 0.0
+
+    # Rejection Fix: No key_level_rejection -> 0.0 points even with dist = 0.0
+    sig_no_rej = {
+        'direction': 'LONG',
+        'key_level_rejection': False,
+        'dist_to_key_level_pct': 0.0
+    }
+    res_no_rej = evaluate_confluence_score("BTC/USDT", sig_no_rej)
+    assert res_no_rej["eval_trace"]["level_points"] == 0.0
+
+
+def test_stage_2_order_book_depth_and_shield():
+    """
+    Order Book Depth (+0.0% to +8.0%):
+    - Thin Book Fix: Only calculate imbalance points if total_book_depth_usd > 100000
+    - ob_points = min(5.0, max(0.0, (imbalance_ratio - 1.0) * 3.5))
+    - Add +3.0 if ob_defensive_shield == True
+    """
+    # Thin Book (< $100,000): Imbalance points ignored
+    sig_thin = {
+        'direction': 'LONG',
+        'total_book_depth_usd': 80000.0,
+        'imbalance_ratio': 2.0,
+        'key_level_rejection': True
+    }
+    res_thin = evaluate_confluence_score("BTC/USDT", sig_thin)
+    assert res_thin["eval_trace"]["ob_points"] == 0.0
+
+    # Deep Book with 2.0x imbalance: (2.0 - 1.0) * 3.5 = 3.5 points
+    sig_deep = {
+        'direction': 'LONG',
+        'total_book_depth_usd': 200000.0,
+        'imbalance_ratio': 2.0,
+        'key_level_rejection': True
+    }
+    res_deep = evaluate_confluence_score("BTC/USDT", sig_deep)
+    assert res_deep["eval_trace"]["ob_points"] == 3.5
+
+    # Deep Book with defensive shield: 3.5 + 3.0 = 6.5 points
+    sig_shield = {
+        'direction': 'LONG',
+        'total_book_depth_usd': 200000.0,
+        'imbalance_ratio': 2.0,
+        'ob_defensive_shield': True,
+        'key_level_rejection': True
+    }
+    res_shield = evaluate_confluence_score("BTC/USDT", sig_shield)
+    assert res_shield["eval_trace"]["ob_points"] == 6.5
+
+    # Deep Book capped at 8.0%: 3.0x imbalance (capped at 5.0) + 3.0 shield = 8.0 points
+    sig_max_ob = {
+        'direction': 'LONG',
+        'total_book_depth_usd': 200000.0,
+        'imbalance_ratio': 3.0,
+        'ob_defensive_shield': True,
+        'key_level_rejection': True
+    }
+    res_max_ob = evaluate_confluence_score("BTC/USDT", sig_max_ob)
+    assert res_max_ob["eval_trace"]["ob_points"] == 8.0
+
+
+def test_stage_2_trend_and_derivatives():
+    """
+    Trend & Derivatives (+0.0% to +10.0%):
+    - +4.0 if macro_trend_aligned == True
+    - +2.0 if funding_rate_tailwind == True
+    - +2.0 if oi_delta_15m > 1.5
+    - +2.0 if RSI Momentum Room (40-60)
+    """
+    sig = {
+        'direction': 'LONG',
+        'macro_trend_aligned': True,       # +4.0
+        'funding_rate_tailwind': True,     # +2.0
+        'oi_delta_15m': 2.1,               # +2.0
+        'rsi_14': 52.0,                    # +2.0
+        'key_level_rejection': True
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    assert res["eval_trace"]["trend_tailwinds"] == 10.0
+
+
+def test_stage_2_friction_absorption_rule():
+    """
+    Microstructure Friction (0.0% to -6.0%):
+    - -3.0 if volume < 0.80 * SMA
+    - -3.0 if blocking_ob_wall == True
+    - Absorption Rule: If vol_points > 6.0, cut friction penalty in half (* 0.5)
+    """
+    # Standard friction: blocking wall without high volume -> -3.0
+    sig_wall = {
+        'direction': 'LONG',
+        'blocking_ob_wall': True,
+        'volume': 1000.0,
+        'vol_sma_20': 1000.0,  # vol_points = 0.0
+        'open': 100.0,
+        'close': 102.0,
+        'key_level_rejection': True
+    }
+    res_wall = evaluate_confluence_score("BTC/USDT", sig_wall)
+    assert res_wall["eval_trace"]["friction"] == -3.0
+
+    # Low volume drag: volume = 750 (0.75x < 0.80x) -> -3.0
+    sig_drag = {
+        'direction': 'LONG',
+        'volume': 750.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res_drag = evaluate_confluence_score("BTC/USDT", sig_drag)
+    assert res_drag["eval_trace"]["friction"] == -3.0
+
+    # Both penalties: -6.0
+    sig_both = {
+        'direction': 'LONG',
+        'volume': 750.0,
+        'vol_sma_20': 1000.0,
+        'blocking_ob_wall': True,
+        'key_level_rejection': True
+    }
+    res_both = evaluate_confluence_score("BTC/USDT", sig_both)
+    assert res_both["eval_trace"]["friction"] == -6.0
+
+    # Absorption Rule: vol_points > 6.0 halves friction penalty
+    # 2.0x volume on green candle -> vol_points = (2.0 - 1.0) * 8.0 = 8.0 (> 6.0)
+    sig_absorb = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'blocking_ob_wall': True,  # normal penalty -3.0
+        'key_level_rejection': True
+    }
+    res_absorb = evaluate_confluence_score("BTC/USDT", sig_absorb)
+    assert res_absorb["eval_trace"]["vol_points"] == 8.0
+    # Penalty halved from -3.0 to -1.5
+    assert res_absorb["eval_trace"]["friction"] == -1.5
+    assert res_absorb["eval_trace"]["breakdown"]["friction_absorbed"] is True
 
 
 # ==============================================================================
-# 4. EDGE CASES & CLAMPING TESTS
+# 4. STAGE 3: THE VIP GATE (TIER CLASSIFICATION)
 # ==============================================================================
 
-def test_edge_cases_direction_casing():
-    """Edge Case: Ensure all variations of direction string are handled seamlessly."""
+def test_stage_3_vip_gate_qualification_continuous_score():
+    """VIP Tier: Score >= 90.0% AND vol_points > 0 AND level_points > 0."""
+    sig_vip = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,          # vol_points = 8.0 (> 0)
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.05, # level_points = 10 * (1 - 0.05/0.30) = 8.33
+        'total_book_depth_usd': 200000.0,
+        'imbalance_ratio': 1.5,        # ob_points = (1.5 - 1.0) * 3.5 = 1.75
+        'macro_trend_aligned': True,   # +4.0
+        'funding_rate_tailwind': True, # +2.0
+    }
+    # Net: 68.0 + 8.0 + 8.33 + 1.75 + 6.0 = 92.08 -> round(92.1, 1)
+    res = evaluate_confluence_score("BTC/USDT", sig_vip)
+    assert res["final_score"] >= 90.0
+    assert res["tier"] == "VIP"
+    assert res["eval_trace"]["vip_capped"] is False
+    assert res["final_score"] == 92.1
+
+
+def test_stage_3_vip_gate_capping_missing_volume():
+    """The 3-Pillar Mandate: Score >= 90.0% but vol_points == 0 caps at 89.9% STANDARD."""
+    sig_no_vol = {
+        'direction': 'LONG',
+        'open': 105.0,
+        'close': 100.0,                # Red candle -> vol_points = 0.0!
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,  # level_points = 10.0
+        'total_book_depth_usd': 200000.0,
+        'imbalance_ratio': 2.0,        # ob_points = 3.5
+        'ob_defensive_shield': True,   # ob_points += 3.0 -> 6.5
+        'macro_trend_aligned': True,   # +4.0
+        'funding_rate_tailwind': True, # +2.0
+        'oi_delta_15m': 2.0,           # +2.0
+    }
+    # Net: 68.0 + 0.0 + 10.0 + 6.5 + 8.0 = 92.5
+    res = evaluate_confluence_score("BTC/USDT", sig_no_vol)
+    assert res["eval_trace"]["vol_points"] == 0.0
+    assert res["eval_trace"]["level_points"] == 10.0
+    assert res["eval_trace"]["net_score"] == 92.5
+    assert res["final_score"] == 89.9  # Capped at 89.9!
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+
+
+def test_stage_3_vip_gate_capping_missing_level_rejection():
+    """The 3-Pillar Mandate: Score >= 90.0% but level_points == 0 caps at 89.9% STANDARD."""
+    sig_no_level = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 12.0
+        'key_level_rejection': False,  # level_points = 0.0!
+        'total_book_depth_usd': 200000.0,
+        'imbalance_ratio': 2.0,        # ob_points = 3.5
+        'ob_defensive_shield': True,   # ob_points += 3.0 -> 6.5
+        'macro_trend_aligned': True,   # +4.0
+        'funding_rate_tailwind': True, # +2.0
+    }
+    # Net: 68.0 + 12.0 + 0.0 + 6.5 + 6.0 = 92.5
+    res = evaluate_confluence_score("BTC/USDT", sig_no_level)
+    assert res["eval_trace"]["vol_points"] == 12.0
+    assert res["eval_trace"]["level_points"] == 0.0
+    assert res["eval_trace"]["net_score"] == 92.5
+    assert res["final_score"] == 89.9  # Capped at 89.9!
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+
+
+def test_stage_3_standard_tier_range():
+    """Scores between 80.0% and 89.9% are classified as STANDARD tier."""
+    sig_std = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 4.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.15, # level_points = 5.0
+        'macro_trend_aligned': True,   # +4.0
+        'funding_rate_tailwind': True, # +2.0
+    }
+    # Net: 68.0 + 4.0 + 5.0 + 0.0 + 6.0 = 83.0
+    res = evaluate_confluence_score("BTC/USDT", sig_std)
+    assert res["final_score"] == 83.0
+    assert res["tier"] == "STANDARD"
+
+
+def test_stage_3_rejected_tier_below_80():
+    """Scores below 80.0% are classified as REJECTED."""
+    sig_rej = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 4.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.15, # level_points = 5.0
+    }
+    # Net: 68.0 + 4.0 + 5.0 = 77.0
+    res = evaluate_confluence_score("BTC/USDT", sig_rej)
+    assert res["final_score"] == 77.0
+    assert res["tier"] == "REJECTED"
+
+
+# ==============================================================================
+# 5. AUDIT TRAIL LOGGING (EVAL_TRACE)
+# ==============================================================================
+
+def test_eval_trace_detailed_logging():
+    """Verify eval_trace records exact decimal calculations for forensic auditing."""
+    sig = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.09,
+        'total_book_depth_usd': 180000.0,
+        'imbalance_ratio': 1.6,
+        'ob_defensive_shield': True,
+        'macro_trend_aligned': True,
+        'funding_rate_tailwind': True,
+        'oi_delta_15m': 2.0,
+        'rsi_14': 48.0,
+        'blocking_ob_wall': False
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    trace = res["eval_trace"]
+    
+    assert trace["stage1_passed"] is True
+    assert trace["base_score"] == 68.0
+    assert isinstance(trace["vol_points"], float)
+    assert isinstance(trace["level_points"], float)
+    assert isinstance(trace["ob_points"], float)
+    assert isinstance(trace["trend_tailwinds"], float)
+    assert isinstance(trace["friction"], float)
+    assert isinstance(trace["net_score"], float)
+    assert isinstance(trace["final_score"], float)
+    assert trace["tier"] in ["VIP", "STANDARD", "REJECTED"]
+    
+    # Verify breakdown fields
+    bd = trace["breakdown"]
+    assert bd["volume_ratio"] == 1.5
+    assert bd["directional_aligned"] is True
+    assert bd["key_level_rejection"] is True
+    assert bd["dist_to_key_level_pct"] == 0.09
+    assert bd["imbalance_ratio"] == 1.6
+    assert bd["total_book_depth_usd"] == 180000.0
+    assert bd["ob_defensive_shield"] is True
+    assert bd["macro_trend_aligned"] is True
+    assert bd["funding_rate_tailwind"] is True
+    assert bd["oi_delta_15m"] == 2.0
+    assert bd["rsi_14"] == 48.0
+    assert bd["rsi_momentum_room"] is True
+
+
+# ==============================================================================
+# 6. INTEGRATION WITH AI EVALUATOR SERVICE
+# ==============================================================================
+
+def test_circuit_breaker_short_circuits_llm_call():
+    """Verify that Stage 1 circuit breakers return immediately without invoking Gemini."""
     async def run():
-        ai = create_mock_ai_evaluator()
-
-        variations = ['bullish', 'BULLISH', 'Bullish', 'long', 'LONG', 'Long', 'buy', 'BUY']
-        for v in variations:
-            sig = {
-                'direction': v,
-                'htf_trend': 'Macro Uptrend (Bullish)',
-                'htf_4h_trend': 'Macro Uptrend (Bullish)',
-                'patterns': ['Hammer']
-            }
-            res = json.loads(await ai.evaluate_signal('BTC/USDT', sig, news_data=[]))
-            assert "+5% Macro Trend Alignment" in res['scoring_checklist'], f"Failed for variation '{v}'"
-            assert res['trade_direction'] == 'LONG'
-
-        short_variations = ['bearish', 'BEARISH', 'Bearish', 'short', 'SHORT', 'Short', 'sell', 'SELL']
-        for sv in short_variations:
-            sig_s = {
-                'direction': sv,
-                'htf_trend': 'Macro Downtrend (Bearish)',
-                'htf_4h_trend': 'Macro Downtrend (Bearish)',
-                'patterns': ['Hammer']
-            }
-            res_s = json.loads(await ai.evaluate_signal('BTC/USDT', sig_s, news_data=[]))
-            assert "+5% Macro Trend Alignment" in res_s['scoring_checklist'], f"Failed for short variation '{sv}'"
-
-    asyncio.run(run())
-
-
-def test_edge_cases_score_bounds_and_clamping():
-    """Edge Case: Verify score clamping to [0, 100] and stackable bonus cap to 25%."""
-    async def run():
-        # Case A: Capped at 100% when all 8 confluences trigger (+40% potential capped to +25%)
-        ai_max = create_mock_ai_evaluator()
-        sig_max = {
-            'direction': 'Bullish',
-            'close': 82000.0,
-            'patterns': ['Pattern1', 'Pattern2'],  # +5%
-            'htf_trend': 'Macro Uptrend (Bullish)',
-            'htf_4h_trend': 'Macro Uptrend (Bullish)',  # +5%
-            'btc_trend': 'Macro Uptrend (Bullish)',  # +5%
-            'imbalance_ratio': 2.0,  # +5%
-            'rr_ratio': 3.0,  # +5%
-            'funding_rate': -0.02,  # +5%
-            'short_liq_zones': '83000',  # +5%
-            'oi_delta_pct': 2.5,
-            'oi_direction': 'Expanding',  # +5%
-            'liquidity_magnets': [{'side': 'ASK', 'price': 84000.0}]
+        evaluator = create_mock_ai_evaluator()
+        sig = {
+            'direction': 'LONG',
+            'macro_4h_conflict': True,
+            'patterns': ['Bullish Engulfing']
         }
-        res_max = json.loads(await ai_max.evaluate_signal('BTC/USDT', sig_max, news_data=[]))
-        assert res_max['final_confidence_rating'] == 100  # Strictly clamped at 100
-
-        # Case B: Clamped at 0% when severe penalties exceed 75%
-        ai_min = create_mock_ai_evaluator({
-            "trade_direction": "SHORT",
-            "overall_verdict": "REJECT",
-            "strategy_analysis": "Severe conflict.",
-            "live_news_penalty": -50,
-            "institutional_wall_penalty": -50,
-            "audit_notes": []
-        })
-        sig_min = {
-            'direction': 'Bearish',
-            'htf_4h_trend': 'Macro Uptrend (Bullish)',  # -15%
-            'pattern_drift_status': 'DEGRADED',  # -10%
-            'patterns': []
-        }
-        # 75 base - 15 - 10 - 50 - 50 = -50% -> clamped to 0%
-        res_min = json.loads(await ai_min.evaluate_signal('BTC/USDT', sig_min, news_data=[]))
-        assert res_min['final_confidence_rating'] == 0
-
-    asyncio.run(run())
-
-
-def test_edge_cases_missing_and_none_fields():
-    """Edge Case: Ensure missing or None fields do not cause uncaught exceptions."""
-    async def run():
-        ai = create_mock_ai_evaluator()
-        empty_sig = {'patterns': []}
-
-        res_raw = await ai.evaluate_signal('BTC/USDT', empty_sig, news_data=[])
+        res_raw = await evaluator.evaluate_signal('BTC/USDT', sig, news_data=[])
         assert res_raw is not None
         res = json.loads(res_raw)
-        assert res['final_confidence_rating'] == 75  # Base score intact
-        assert res['scoring_checklist'] == []
+        
+        assert res["tier"] == "REJECTED"
+        assert res["final_confidence_rating"] == 0.0
+        assert "Circuit breaker tripped" in res["strategy_analysis"]
+        # LLM call was never executed!
+        evaluator.client.aio.models.generate_content.assert_not_called()
 
     asyncio.run(run())
+
+
+def test_ai_qualitative_adjustments_on_parametric_score():
+    """Verify AI qualitative live news penalty applies cleanly to parametric score."""
+    async def run():
+        evaluator = create_mock_ai_evaluator({
+            "trade_direction": "LONG",
+            "overall_verdict": "APPROVE",
+            "strategy_analysis": "Negative regulatory headline noted.",
+            "live_news_penalty": -10,
+            "institutional_wall_penalty": 0,
+            "audit_notes": []
+        })
+        sig = {
+            'direction': 'LONG',
+            'open': 100.0,
+            'close': 105.0,
+            'volume': 2000.0,
+            'vol_sma_20': 1000.0,          # vol_points = 8.0
+            'key_level_rejection': True,
+            'dist_to_key_level_pct': 0.05, # level_points = 8.33
+            'total_book_depth_usd': 200000.0,
+            'imbalance_ratio': 1.5,        # ob_points = 1.75
+            'macro_trend_aligned': True,   # +4.0
+            'funding_rate_tailwind': True, # +2.0
+            'patterns': ['Engulfing']
+        }
+        # Parametric score: 92.1 -> live news penalty -10 -> 82.1
+        res_raw = await evaluator.evaluate_signal('BTC/USDT', sig, news_data=[])
+        assert res_raw is not None
+        res = json.loads(res_raw)
+        
+        assert res["final_confidence_rating"] == 82.1
+        assert res["tier"] == "STANDARD"
+        assert "-10% Live News Conflict" in res["scoring_checklist"]
+
+    asyncio.run(run())
+
+
+# ==============================================================================
+# 7. PARAMETERIZED BOUNDARY FIXTURES & EDGE CASES
+# ==============================================================================
+
+@pytest.mark.parametrize("direction, rsi_val, expected_rejected", [
+    ("LONG", 74.99, False),
+    ("LONG", 75.0, False),     # Boundary: <= 75 passes
+    ("LONG", 75.01, True),     # Tripped: > 75 fails
+    ("SHORT", 25.01, False),
+    ("SHORT", 25.0, False),    # Boundary: >= 25 passes
+    ("SHORT", 24.99, True),    # Tripped: < 25 fails
+])
+def test_stage_1_rsi_boundaries_parameterized(direction, rsi_val, expected_rejected):
+    """Verify exact decimal boundary transitions for RSI exhaustion circuit breaker."""
+    sig = {
+        'direction': direction,
+        'rsi_14': rsi_val,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    if expected_rejected:
+        assert res["tier"] == "REJECTED"
+        assert res["final_score"] == 0.0
+        assert res["eval_trace"]["stage1_passed"] is False
+    else:
+        assert res["eval_trace"]["stage1_passed"] is True
+
+
+@pytest.mark.parametrize("vol, sma, key_rejection, expected_passed", [
+    (550.0, 1000.0, False, True),    # 0.55x SMA: Exactly at boundary, passes without rejection
+    (549.9, 1000.0, False, False),   # < 0.55x SMA: Below boundary, trips circuit breaker
+    (549.9, 1000.0, True, True),     # < 0.55x SMA but key level rejection holds: saved!
+    (0.0, 1000.0, False, False),     # Zero volume without rejection: fails
+    (0.0, 1000.0, True, True),       # Zero volume with rejection: passes Stage 1
+])
+def test_stage_1_anemic_volume_boundaries_parameterized(vol, sma, key_rejection, expected_passed):
+    """Verify exact decimal volume boundaries for anemic volume trap."""
+    sig = {
+        'direction': 'LONG',
+        'volume': vol,
+        'vol_sma_20': sma,
+        'key_level_rejection': key_rejection
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    assert res["eval_trace"]["stage1_passed"] is expected_passed
+
+
+@pytest.mark.parametrize("dist, expected_points", [
+    (0.0, 10.0),
+    (0.15, 5.0),
+    (0.30, 0.0),      # Exact boundary
+    (0.3001, 0.0),    # Beyond boundary
+    (0.50, 0.0),
+])
+def test_stage_2_structural_level_distance_boundaries_parameterized(dist, expected_points):
+    """Verify continuous linear decay of structural level precision points."""
+    sig = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': dist
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    assert pytest.approx(res["eval_trace"]["level_points"], abs=0.01) == expected_points
+
+
+@pytest.mark.parametrize("depth_usd, imbalance, expected_ob_pts", [
+    (99_999.0, 2.0, 0.0),      # Thin book (< 100k) ignores imbalance
+    (100_000.0, 2.0, 0.0),     # Exactly at 100k (boundary: > 100k required)
+    (100_001.0, 2.0, 3.5),     # Deep book awards imbalance points: (2 - 1) * 3.5 = 3.5
+])
+def test_stage_2_thin_book_depth_boundaries_parameterized(depth_usd, imbalance, expected_ob_pts):
+    """Verify thin book filter boundary at exactly $100,000 USD."""
+    sig = {
+        'direction': 'LONG',
+        'total_book_depth_usd': depth_usd,
+        'imbalance_ratio': imbalance,
+        'key_level_rejection': True
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    assert pytest.approx(res["eval_trace"]["ob_points"], abs=0.01) == expected_ob_pts
+
+
+@pytest.mark.parametrize("vol_points, expected_friction", [
+    (6.0, -3.0),     # At threshold (not > 6.0): friction is NOT halved
+    (6.01, -1.5),    # Above threshold (> 6.0): smart money absorbs resistance, halved!
+    (8.0, -1.5),     # Heavy volume: halved!
+])
+def test_stage_2_absorption_boundary_parameterized(vol_points, expected_friction):
+    """Verify smart money absorption boundary at exactly 6.0 volume points."""
+    # Custom signal mocking volume points directly
+    ratio = 1.0 + (vol_points / 8.0)
+    sig = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': ratio * 1000.0,
+        'vol_sma_20': 1000.0,
+        'blocking_ob_wall': True,
+        'key_level_rejection': True
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    assert pytest.approx(res["eval_trace"]["vol_points"], abs=0.05) == vol_points
+    assert pytest.approx(res["eval_trace"]["friction"], abs=0.01) == expected_friction
+
+
+def test_zero_and_edge_case_inputs():
+    """Verify robustness against zero/empty values and extreme inputs without exceptions."""
+    edge_cases = [
+        {'direction': 'LONG', 'volume': 0.0, 'vol_sma_20': 0.0},
+        {'direction': 'LONG', 'open': 0.0, 'close': 0.0, 'volume': 1000.0, 'vol_sma_20': 1000.0},
+        {'direction': 'SHORT', 'total_book_depth_usd': 0.0, 'imbalance_ratio': 0.0},
+        {'direction': 'NEUTRAL', 'entry': 0.0},
+        {}
+    ]
+    for ec in edge_cases:
+        res = evaluate_confluence_score("BTC/USDT", ec)
+        assert isinstance(res, dict)
+        assert "final_score" in res
+        assert "eval_trace" in res
+        assert 0.0 <= res["final_score"] <= 100.0
+

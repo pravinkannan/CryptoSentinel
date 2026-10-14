@@ -16,19 +16,45 @@ The `SignalGeneratorService` evaluates market data and builds a highly structure
 
 The `AIEvaluatorService` wraps the payload into a heavily engineered prompt sent to Google Gemini. Gemini acts as an institutional desk manager reviewing a junior trader's setup.
 
-### Scoring Structure
-The AI starts at a base score of 100% and deducts points for conflicts:
-- **News Conflict (-10% to -20%)**: If the technical setup is Bullish but live news indicates a sudden bearish catalyst (e.g., regulatory crackdown).
-- **Macro Trend Conflict (-15%)**: If the trade directly opposes the 4h/1h high-timeframe trend.
-- **Pattern Drift Penalty (-10%)**: If the pattern's recent historic win-rate is `< 40%`, it is flagged as `DEGRADED`.
-- **Microstructure Warning (-10%)**: If the funding rate is heavily skewed indicating crowded consensus.
+### Scoring Structure: Two-Stage Parametric Engine
 
-### Final Verdict Routing
-The AI returns a strict JSON containing `trade_direction`, `final_confidence_rating`, and an `overall_verdict`.
+Sentinel replaces flat additive scoring with a continuous **Two-Stage Parametric Confluence Engine**:
 
-- **VIP Dispatch (>= 90%)**: Institutional-grade conviction (`👑 VIP TIER`). Dispatched to premium channels.
-- **Standard Dispatch (80% - 89%)**: High-probability setup (`🔹 STANDARD TIER`). Traded via PaperTrader and logged.
-- **Reject (< 80%)**: The trade is discarded as low probability.
+#### Stage 1: Hard Binary Sanity Gate (The Circuit Breaker)
+Immediately returns `REJECTED` (score: `0.0%`) without executing an LLM call if:
+1. **4H Macro Conflict**: Trade opposes the 4H macro trend.
+2. **RSI Exhaustion**: RSI > 75 for Long, or RSI < 25 for Short.
+3. **Anemic Volume Trap**: Volume < 0.55x 20-period SMA AND `key_level_rejection == False`.
+
+#### Stage 2: Parametric Continuous Scoring
+Starts with `base_score = 68.0%` and computes continuous probability points:
+1. **Dynamic Institutional Volume (0.0% to +12.0%)**:
+   - `vol_points = min(12.0, max(0.0, ((volume / vol_sma_20) - 1.0) * 8.0))`
+   - *Directional Fix*: Only awarded if candle closed strongly in trade direction (`close > open` for Long, `close < open` for Short).
+2. **Structural Level Precision (0.0% to +10.0%)**:
+   - *Rejection Fix*: Only awarded if `key_level_rejection == True`.
+   - `level_points = max(0.0, 10.0 * (1.0 - (dist / 0.30)))` if `dist <= 0.30` else `0.0`.
+3. **Order Book Depth (+0.0% to +8.0%)**:
+   - *Thin Book Fix*: Only calculates imbalance points if `total_book_depth_usd > 100,000`.
+   - `ob_points = min(5.0, max(0.0, (imbalance_ratio - 1.0) * 3.5))`.
+   - Adds `+3.0%` if `ob_defensive_shield == True`.
+4. **Trend & Derivatives (+0.0% to +10.0%)**:
+   - `+4.0%` for `macro_trend_aligned == True`.
+   - `+2.0%` for `funding_rate_tailwind == True`.
+   - `+2.0%` for `oi_delta_15m > 1.5`.
+   - `+2.0%` for RSI Momentum Room (RSI between 40-60).
+5. **Microstructure Friction Absorption (0.0% to -6.0%)**:
+   - `-3.0%` if volume < 0.80x SMA.
+   - `-3.0%` if `blocking_ob_wall == True`.
+   - *Smart Money Absorption*: If `vol_points > 6.0`, friction penalties are halved (* 0.5).
+
+`net_score = base_score + vol_points + level_points + ob_points + trend_tailwinds + friction`  
+`final_score = round(max(0.0, min(100.0, net_score)), 1)`
+
+#### Stage 3: The VIP Gate (Tier Classification)
+- **VIP Dispatch (>= 90.0%)**: Requires `vol_points > 0` AND `level_points > 0` (The 3-Pillar Mandate). If missing either pillar, score is strictly capped at `89.9%` (`🔹 STANDARD TIER`).
+- **Standard Dispatch (80.0% - 89.9%)**: High-probability setup (`🔹 STANDARD TIER`). Traded via PaperTrader and logged.
+- **Reject (< 80.0%)**: Discarded as low probability. All exact decimal deductions and metrics are recorded in `eval_trace` for auditability.
 
 ### Directional Invalidation & Bias Flip Protocol
 When market structure changes while an active setup is open (e.g. 1h Bullish Engulfing follows an earlier 1h Bearish setup):
