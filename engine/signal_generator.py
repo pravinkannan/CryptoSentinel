@@ -6,7 +6,7 @@ and technical indicator computation for institutional trade signal generation.
 import logging
 from datetime import datetime, timezone
 import pandas as pd
-import pandas_ta as ta
+import pandas_ta  # noqa: F401
 from typing import Dict, List, Optional, Any, Tuple
 from core.config import settings
 from core.models import SignalData
@@ -198,12 +198,21 @@ class SignalGeneratorService:
             multiplier=settings.liquidity_magnet_multiplier
         )
         
-        # 3. Risk Management & Exits (Decoupled)
-        risk_params = self.risk_manager.compute_risk_parameters(df, symbol, timeframe, direction, entry, regime)
+        # Enrich magnets with preliminary tactical actions (identifies SWEEP_RISK, DEFENSIVE_SHIELD, etc.)
+        liquidity_magnets = enrich_magnets_with_actions(
+            liquidity_magnets,
+            direction=direction,
+            entry=entry
+        )
+
+        # 3. Risk Management & Exits (Decoupled, anchored safely behind SWEEP_RISK pools)
+        risk_params = self.risk_manager.compute_risk_parameters(
+            df, symbol, timeframe, direction, entry, regime, liquidity_magnets=liquidity_magnets
+        )
         if not risk_params:
             return None
 
-        # Enrich magnets with concrete tactical actions
+        # Re-enrich magnets with finalized stops and targets
         liquidity_magnets = enrich_magnets_with_actions(
             liquidity_magnets,
             direction=direction,
@@ -213,6 +222,7 @@ class SignalGeneratorService:
         )
         for m in liquidity_magnets:
             rationale.append(f"Liquidity magnet: {m['volume_formatted']} {m['side']} @ ${m['price']} -> {m.get('action')}")
+
             
         liq_zones = self.risk_manager.calculate_liquidation_zones(df)
 
@@ -297,12 +307,22 @@ class SignalGeneratorService:
         is_long = direction in ["Bullish", "LONG", "BUY"]
         is_short = direction in ["Bearish", "SHORT", "SELL"]
 
-        # 4H macro conflict is enforced strictly for higher timeframes (1h, 4h).
-        # Scalping timeframes (5m, 15m) are permitted to trade mean-reversions and intraday counter-trend bounces.
-        if timeframe in ['5m', '15m']:
-            macro_4h_conflict = False
+        # 4H macro trend conflict & counter-trend scalp filter
+        opposes_4h = (htf_4h_trend.startswith('Macro Down') and is_long) or (htf_4h_trend.startswith('Macro Up') and is_short)
+        if opposes_4h:
+            if timeframe in ['5m', '15m']:
+                # Counter-trend scalps require a higher bar:
+                # Confirmed key level rejection AND institutional volume surge (> 2.5x SMA)
+                if key_level_rejection and volume_ratio >= 2.5:
+                    macro_4h_conflict = False
+                    rationale.append(f"Counter-trend scalp permitted: strong volume ({volume_ratio:.2f}x) & key level rejection.")
+                else:
+                    macro_4h_conflict = True
+                    rationale.append(f"4H Macro conflict: counter-trend {timeframe} scalp requires key level rejection & volume >= 2.5x SMA (got {volume_ratio:.2f}x).")
+            else:
+                macro_4h_conflict = True
         else:
-            macro_4h_conflict = (htf_4h_trend.startswith('Macro Down') and is_long) or (htf_4h_trend.startswith('Macro Up') and is_short)
+            macro_4h_conflict = False
 
         macro_trend_aligned = (
             (htf_trend.startswith('Macro Up') and htf_4h_trend.startswith('Macro Up') and is_long) or
@@ -310,6 +330,7 @@ class SignalGeneratorService:
         )
         ob_defensive_shield = any(m.get('role') == 'DEFENSIVE_SHIELD' for m in liquidity_magnets)
         blocking_ob_wall = any(m.get('role') in ['BLOCKING_RESISTANCE', 'BLOCKING_SUPPORT'] for m in liquidity_magnets)
+        has_sweep_risk = any(m.get('role') == 'SWEEP_RISK' for m in liquidity_magnets)
 
         # 6. Build and Validate Typed Signal Payload
         return SignalData(
@@ -366,5 +387,9 @@ class SignalGeneratorService:
             ob_defensive_shield=ob_defensive_shield,
             macro_trend_aligned=macro_trend_aligned,
             macro_4h_conflict=macro_4h_conflict,
-            blocking_ob_wall=blocking_ob_wall
+            blocking_ob_wall=blocking_ob_wall,
+            has_sweep_risk=has_sweep_risk,
+            setup_type=risk_params.get('setup_type', 'STANDARD_SWING'),
+            breakeven_price=risk_params.get('breakeven_price', 0.0)
         ).model_dump()
+

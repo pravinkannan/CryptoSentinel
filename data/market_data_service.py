@@ -4,7 +4,6 @@ Follows SRP by only fetching and formatting market data without business logic.
 """
 
 import logging
-import asyncio
 from typing import Optional, Dict, Any, List
 import ccxt.async_support as ccxt
 import pandas as pd
@@ -220,7 +219,10 @@ def enrich_magnets_with_actions(
                     )
             elif side == "BID" and price >= entry:
                 role = "MOMENTUM_SUPPORT"
-                action = f"🚀 Momentum Lift: Aggressive bid cluster driving bid-ask spread upward. Ride momentum with trailing stop."
+                action = (
+                    "🚀 Momentum Lift: Aggressive bid cluster driving bid-ask spread upward. "
+                    "Ride momentum with trailing stop."
+                )
 
         elif is_short:
             if side == "BID" and price < entry:
@@ -257,7 +259,10 @@ def enrich_magnets_with_actions(
                     )
             elif side == "ASK" and price <= entry:
                 role = "MOMENTUM_PRESSURE"
-                action = f"🔻 Downward Pressure: Aggressive ask cluster pressing price down. Trail stop loss aggressively."
+                action = (
+                    "🔻 Downward Pressure: Aggressive ask cluster pressing price down. "
+                    "Trail stop loss aggressively."
+                )
 
         item['role'] = role
         item['action'] = action

@@ -15,4 +15,4 @@ data/sentinel.db*
 sentinel_state.json
 .DS_Store
 Thumbs.db
-
+scratch/

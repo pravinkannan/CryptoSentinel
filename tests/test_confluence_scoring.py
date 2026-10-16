@@ -497,7 +497,7 @@ def test_stage_2_friction_absorption_rule():
 # ==============================================================================
 
 def test_stage_3_vip_gate_qualification_continuous_score():
-    """VIP Tier: Score >= 90.0% AND vol_points > 0 AND level_points > 0."""
+    """VIP Tier: Score >= 90.0% AND vol_points > 0 AND level_points > 0 AND no sweep risk AND macro aligned AND depth >= $250k."""
     sig_vip = {
         'direction': 'LONG',
         'open': 100.0,
@@ -506,7 +506,7 @@ def test_stage_3_vip_gate_qualification_continuous_score():
         'vol_sma_20': 1000.0,          # vol_points = 8.0 (> 0)
         'key_level_rejection': True,
         'dist_to_key_level_pct': 0.05, # level_points = 10 * (1 - 0.05/0.30) = 8.33
-        'total_book_depth_usd': 200000.0,
+        'total_book_depth_usd': 300000.0, # Meets VIP >= $250k requirement
         'imbalance_ratio': 1.5,        # ob_points = (1.5 - 1.0) * 3.5 = 1.75
         'macro_trend_aligned': True,   # +4.0
         'funding_rate_tailwind': True, # +2.0
@@ -529,7 +529,7 @@ def test_stage_3_vip_gate_capping_missing_volume():
         'vol_sma_20': 1000.0,
         'key_level_rejection': True,
         'dist_to_key_level_pct': 0.0,  # level_points = 10.0
-        'total_book_depth_usd': 200000.0,
+        'total_book_depth_usd': 300000.0,
         'imbalance_ratio': 2.0,        # ob_points = 3.5
         'ob_defensive_shield': True,   # ob_points += 3.0 -> 6.5
         'macro_trend_aligned': True,   # +4.0
@@ -541,13 +541,13 @@ def test_stage_3_vip_gate_capping_missing_volume():
     assert res["eval_trace"]["vol_points"] == 0.0
     assert res["eval_trace"]["level_points"] == 10.0
     assert res["eval_trace"]["net_score"] == 92.5
-    assert res["final_score"] == 89.9  # Capped at 89.9!
+    assert res["final_score"] == 91.9  # Capped at 91.9!
     assert res["tier"] == "STANDARD"
     assert res["eval_trace"]["vip_capped"] is True
 
 
 def test_stage_3_vip_gate_capping_missing_level_rejection():
-    """The 3-Pillar Mandate: Score >= 90.0% but level_points == 0 caps at 89.9% STANDARD."""
+    """The 3-Pillar Mandate: Score >= 92.0% but level_points == 0 caps at 91.9% STANDARD."""
     sig_no_level = {
         'direction': 'LONG',
         'open': 100.0,
@@ -555,7 +555,7 @@ def test_stage_3_vip_gate_capping_missing_level_rejection():
         'volume': 2500.0,
         'vol_sma_20': 1000.0,          # vol_points = 12.0
         'key_level_rejection': False,  # level_points = 0.0!
-        'total_book_depth_usd': 200000.0,
+        'total_book_depth_usd': 300000.0,
         'imbalance_ratio': 2.0,        # ob_points = 3.5
         'ob_defensive_shield': True,   # ob_points += 3.0 -> 6.5
         'macro_trend_aligned': True,   # +4.0
@@ -566,13 +566,84 @@ def test_stage_3_vip_gate_capping_missing_level_rejection():
     assert res["eval_trace"]["vol_points"] == 12.0
     assert res["eval_trace"]["level_points"] == 0.0
     assert res["eval_trace"]["net_score"] == 92.5
-    assert res["final_score"] == 89.9  # Capped at 89.9!
+    assert res["final_score"] == 91.9  # Capped at 91.9!
     assert res["tier"] == "STANDARD"
     assert res["eval_trace"]["vip_capped"] is True
 
 
+def test_stage_3_vip_gate_capping_insufficient_book_depth():
+    """VIP Gate: Book depth < $250k caps score at 91.9% STANDARD."""
+    sig_thin_vip = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,          # vol_points = 8.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.05, # level_points = 8.33
+        'total_book_depth_usd': 200000.0, # < $250k threshold!
+        'imbalance_ratio': 1.5,        # ob_points = 1.75
+        'macro_trend_aligned': True,   # +4.0
+        'funding_rate_tailwind': True, # +2.0
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig_thin_vip)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("Order Book Depth" in c for c in res["scoring_checklist"])
+
+
+def test_stage_3_vip_gate_capping_has_sweep_risk():
+    """VIP Gate: Opposing SWEEP_RISK presence caps score at 91.9% STANDARD."""
+    sig_sweep = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.05,
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 1.5,
+        'macro_trend_aligned': True,
+        'funding_rate_tailwind': True,
+        'oi_delta_15m': 2.0,           # +2.0 -> Net score reaches 92.6% (>= 92.0)
+        'liquidity_magnets': [{'role': 'SWEEP_RISK', 'price': 99.5, 'side': 'BID'}]
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig_sweep)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("No Sweep Risk" in c for c in res["scoring_checklist"])
+
+
+def test_stage_3_vip_gate_capping_macro_trend_not_aligned():
+    """VIP Gate: Missing macro trend alignment caps score at 91.9% STANDARD."""
+    sig_not_aligned = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 12.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,  # level_points = 10.0
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 1.5,
+        'macro_trend_aligned': False,  # Missing macro alignment!
+        'funding_rate_tailwind': True, # +2.0
+        'oi_delta_15m': 2.0,           # +2.0
+    }
+    # Net: 68.0 + 12.0 + 10.0 + 1.75 + 4.0 = 95.75 -> caps at 91.9%
+    res = evaluate_confluence_score("BTC/USDT", sig_not_aligned)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("Macro Alignment" in c for c in res["scoring_checklist"])
+
+
+
 def test_stage_3_standard_tier_range():
-    """Scores between 80.0% and 89.9% are classified as STANDARD tier."""
+    """Scores between 86.0% and 91.9% are classified as STANDARD tier."""
     sig_std = {
         'direction': 'LONG',
         'open': 100.0,
@@ -583,15 +654,17 @@ def test_stage_3_standard_tier_range():
         'dist_to_key_level_pct': 0.15, # level_points = 5.0
         'macro_trend_aligned': True,   # +4.0
         'funding_rate_tailwind': True, # +2.0
+        'oi_delta_15m': 2.0,           # +2.0
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 1.5,        # ob_points = 1.75
     }
-    # Net: 68.0 + 4.0 + 5.0 + 0.0 + 6.0 = 83.0
     res = evaluate_confluence_score("BTC/USDT", sig_std)
-    assert res["final_score"] == 83.0
+    assert res["final_score"] == 86.8
     assert res["tier"] == "STANDARD"
 
 
-def test_stage_3_rejected_tier_below_80():
-    """Scores below 80.0% are classified as REJECTED."""
+def test_stage_3_rejected_tier_below_86():
+    """Scores below 86.0% are classified as REJECTED."""
     sig_rej = {
         'direction': 'LONG',
         'open': 100.0,
@@ -692,8 +765,8 @@ def test_ai_qualitative_adjustments_on_parametric_score():
         evaluator = create_mock_ai_evaluator({
             "trade_direction": "LONG",
             "overall_verdict": "APPROVE",
-            "strategy_analysis": "Negative regulatory headline noted.",
-            "live_news_penalty": -10,
+            "strategy_analysis": "Minor regulatory headline noted.",
+            "live_news_penalty": -5,
             "institutional_wall_penalty": 0,
             "audit_notes": []
         })
@@ -705,20 +778,21 @@ def test_ai_qualitative_adjustments_on_parametric_score():
             'vol_sma_20': 1000.0,          # vol_points = 8.0
             'key_level_rejection': True,
             'dist_to_key_level_pct': 0.05, # level_points = 8.33
-            'total_book_depth_usd': 200000.0,
+            'total_book_depth_usd': 300000.0,
             'imbalance_ratio': 1.5,        # ob_points = 1.75
             'macro_trend_aligned': True,   # +4.0
             'funding_rate_tailwind': True, # +2.0
             'patterns': ['Engulfing']
         }
-        # Parametric score: 92.1 -> live news penalty -10 -> 82.1
+
+        # Parametric score: 92.1 -> live news penalty -5 -> 87.1
         res_raw = await evaluator.evaluate_signal('BTC/USDT', sig, news_data=[])
         assert res_raw is not None
         res = json.loads(res_raw)
         
-        assert res["final_confidence_rating"] == 82.1
+        assert res["final_confidence_rating"] == 87.1
         assert res["tier"] == "STANDARD"
-        assert "-10% Live News Conflict" in res["scoring_checklist"]
+        assert "-5% Live News Conflict" in res["scoring_checklist"]
 
     asyncio.run(run())
 
@@ -845,4 +919,171 @@ def test_zero_and_edge_case_inputs():
         assert "final_score" in res
         assert "eval_trace" in res
         assert 0.0 <= res["final_score"] <= 100.0
+
+
+# ==============================================================================
+# 11. MULTI-MODEL FALLBACK CASCADE & 429 RESILIENCE TESTS
+# ==============================================================================
+
+def test_ai_evaluator_fallback_cascade_on_429():
+    """Verify primary model 429 RESOURCE_EXHAUSTED cascades to fallback model."""
+    async def _run():
+        evaluator = AIEvaluatorService(
+            api_key="dummy_key", 
+            model_name="gemini-3.8-flash",
+            fallback_models=["gemini-3.5-flash-lite"]
+        )
+        
+        mock_success_response = MagicMock()
+        mock_success_response.text = json.dumps({
+            "trade_direction": "LONG",
+            "overall_verdict": "APPROVE",
+            "strategy_analysis": "Fallback audit succeeded.",
+            "live_news_penalty": 0,
+            "institutional_wall_penalty": 0,
+            "audit_notes": []
+        })
+
+        call_counts = {"count": 0}
+        async def mock_generate_content(*args, **kwargs):
+            call_counts["count"] += 1
+            model = kwargs.get("model", "")
+            if model == "gemini-3.8-flash":
+                raise Exception("429 RESOURCE_EXHAUSTED. Quota exceeded for metric: generativelanguage.googleapis.com")
+            return mock_success_response
+
+        evaluator.client.aio.models.generate_content = mock_generate_content
+
+        sig = {
+            'direction': 'LONG',
+            'volume': 1500.0,
+            'vol_sma_20': 1000.0,
+            'key_level_rejection': True
+        }
+        res_raw = await evaluator.evaluate_signal("BTC/USDT", sig)
+        assert res_raw is not None
+        data = json.loads(res_raw)
+        assert data["trade_direction"] == "LONG"
+        assert data["overall_verdict"] == "APPROVE"
+        assert call_counts["count"] == 2
+
+    asyncio.run(_run())
+
+
+def test_ai_evaluator_deterministic_fallback_when_all_models_fail():
+    """Verify that when all models fail (e.g. 429 on all), parametric score is preserved instead of dropping trade."""
+    async def _run():
+        evaluator = AIEvaluatorService(
+            api_key="dummy_key", 
+            model_name="gemini-3.8-flash",
+            fallback_models=["gemini-3.5-flash-lite"]
+        )
+
+        async def mock_generate_content(*args, **kwargs):
+            raise Exception("429 RESOURCE_EXHAUSTED. All quotas exhausted.")
+
+        evaluator.client.aio.models.generate_content = mock_generate_content
+
+        sig = {
+            'direction': 'LONG',
+            'volume': 1500.0,
+            'vol_sma_20': 1000.0,
+            'key_level_rejection': True
+        }
+        res_raw = await evaluator.evaluate_signal("BTC/USDT", sig)
+        assert res_raw is not None
+        data = json.loads(res_raw)
+        assert data["trade_direction"] == "LONG"
+        assert data["final_confidence_rating"] > 0.0
+        assert any("Parametric Preserved" in c for c in data["scoring_checklist"])
+
+    asyncio.run(_run())
+
+
+def test_ai_autopsy_fallback_on_429():
+    """Verify autopsy cascades on 429 and returns fallback autopsy if all models fail."""
+    async def _run():
+        evaluator = AIEvaluatorService(
+            api_key="dummy_key", 
+            model_name="gemini-3.8-flash",
+            fallback_models=["gemini-3.5-flash-lite"]
+        )
+
+        async def mock_generate_content(*args, **kwargs):
+            raise Exception("429 RESOURCE_EXHAUSTED.")
+
+        evaluator.client.aio.models.generate_content = mock_generate_content
+
+        trade_summary = {
+            "symbol": "BTC/USDT",
+            "direction": "LONG",
+            "entry_price": 81000.0,
+            "sl_price": 80500.0,
+            "trade_id": "test-id"
+        }
+        sl_candle = {"open": 80600.0, "high": 80650.0, "low": 80450.0, "close": 80480.0, "volume": 120.0}
+
+        autopsy = await evaluator.generate_autopsy(trade_summary, sl_candle)
+        assert isinstance(autopsy, dict)
+        assert autopsy["failure_category"] == "SL_TOO_TIGHT"
+
+    asyncio.run(_run())
+
+
+def test_stage_1_counter_trend_scalp_permitted():
+    """5m/15m counter-trend scalp is permitted ONLY with key level rejection AND volume >= 2.5x SMA."""
+    sig_permitted = {
+        'direction': 'LONG',
+        'timeframe': '5m',
+        'htf_4h_trend': 'Macro Down (Bearish)',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2600.0,
+        'vol_sma_20': 1000.0,          # volume_ratio = 2.6x (>= 2.5x)
+        'key_level_rejection': True,   # Confirmed rejection
+        'dist_to_key_level_pct': 0.05
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig_permitted)
+    assert res["status"] != "REJECTED"
+    assert res["eval_trace"]["stage1_passed"] is True
+
+
+def test_stage_1_counter_trend_scalp_rejected_insufficient_volume():
+    """5m counter-trend scalp with volume < 2.5x SMA is rejected by 4H macro conflict."""
+    sig_low_vol = {
+        'direction': 'LONG',
+        'timeframe': '5m',
+        'htf_4h_trend': 'Macro Down (Bearish)',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,          # volume_ratio = 2.0x (< 2.5x)
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.05
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig_low_vol)
+    assert res["status"] == "REJECTED"
+    assert res["eval_trace"]["stage1_passed"] is False
+    assert res["eval_trace"]["circuit_breaker"] == "4H Macro Conflict"
+
+
+def test_stage_1_counter_trend_scalp_rejected_no_rejection():
+    """5m counter-trend scalp without key level rejection is rejected even with volume >= 2.5x SMA."""
+    sig_no_rej = {
+        'direction': 'LONG',
+        'timeframe': '5m',
+        'htf_4h_trend': 'Macro Down (Bearish)',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 3000.0,
+        'vol_sma_20': 1000.0,          # volume_ratio = 3.0x
+        'key_level_rejection': False,  # Missing key level rejection!
+        'dist_to_key_level_pct': 0.50
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig_no_rej)
+    assert res["status"] == "REJECTED"
+    assert res["eval_trace"]["stage1_passed"] is False
+    assert res["eval_trace"]["circuit_breaker"] == "4H Macro Conflict"
+
+
 

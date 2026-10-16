@@ -78,7 +78,7 @@ class PatternRecognitionService:
 
         # FVG Tap & Go Setup
         if len(df) >= 4 and regime_data and regime_data.get("regime") == "HIGH_VOLATILITY" and regime_data.get("phase") == "PHASE 2":
-            c1, c2, c3 = df.iloc[-4], df.iloc[-3], df.iloc[-2]
+            c1, c3 = df.iloc[-4], df.iloc[-2]
             c4 = df.iloc[-1]
             if c1['high'] < c3['low']:
                 fvg_top, fvg_bot = c3['low'], c1['high']

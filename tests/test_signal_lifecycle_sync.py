@@ -201,10 +201,10 @@ def test_main_prunes_closed_signal_and_dispatches_reversal(tmp_path):
             'regime': 'NORMAL'
         })
 
-        # AI evaluates 85% SHORT (which is < 100%, but the 100% LONG was stopped out!)
+        # AI evaluates 88% SHORT (which is < 100%, but the 100% LONG was stopped out!)
         app.ai_evaluator.evaluate_signal = AsyncMock(return_value=json.dumps({
             'trade_direction': 'SHORT',
-            'final_confidence_rating': 85,
+            'final_confidence_rating': 88,
             'overall_verdict': 'CONFIRMED'
         }))
 
@@ -214,10 +214,10 @@ def test_main_prunes_closed_signal_and_dispatches_reversal(tmp_path):
         # Result:
         # Ghost 15m LONG must be pruned
         assert f"{symbol}_15m" not in sm.state["active_signals"]
-        # Fresh 1h SHORT (85%) must be accepted and dispatched!
+        # Fresh 1h SHORT (88%) must be accepted and dispatched!
         assert f"{symbol}_{tf}" in sm.state["active_signals"]
         assert sm.state["active_signals"][f"{symbol}_{tf}"]["direction"] == "SHORT"
-        assert sm.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 85
+        assert sm.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 88
         app.notifier.notify_signal.assert_awaited_once()
 
     asyncio.run(run_test())

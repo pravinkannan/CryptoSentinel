@@ -46,7 +46,7 @@ class PaperTradingService:
         try:
             async with get_db_connection(self.db_path) as conn:
                 cursor = await conn.execute('''
-                    SELECT t.trade_id, t.direction, t.entry_price, t.sl_price, t.tp1_price, t.tp2_price, t.tp1_hit, t.leverage, e.mae_pct, e.mfe_pct, t.timestamp, t.ttl_mins
+                    SELECT t.trade_id, t.direction, t.entry_price, t.sl_price, t.tp1_price, t.tp2_price, t.tp1_hit, t.leverage, e.mae_pct, e.mfe_pct, t.timestamp, t.ttl_mins, t.trailing_sl
                     FROM trades t
                     JOIN evaluations e ON t.trade_id = e.trade_id
                     WHERE t.symbol = ? AND t.status = ?
@@ -54,11 +54,24 @@ class PaperTradingService:
                 pending_trades = await cursor.fetchall()
 
                 for trade in pending_trades:
-                    trade_id, direction, entry, sl, tp1, tp2, tp1_hit, lev, mae, mfe, ts_str, ttl_mins = trade
+                    trade_id, direction, entry, sl, tp1, tp2, tp1_hit, lev, mae, mfe, ts_str, ttl_mins, trailing_sl = trade
                     if mae is None: mae = 0.0
                     if mfe is None: mfe = 0.0
                     if ttl_mins is None: ttl_mins = settings.trade_ttl_minutes
+                    current_sl = float(trailing_sl) if (trailing_sl is not None and float(trailing_sl) > 0) else float(sl)
                     status, exit_price = 'PENDING', 0.0
+
+                    initial_risk = abs(entry - sl)
+                    be_r_ratio = getattr(settings, 'breakeven_trigger_r_ratio', 1.0)
+                    close_ratio = getattr(settings, 'tp1_close_ratio', 0.70)
+                    rem_ratio = 1.0 - close_ratio
+
+                    if direction.upper() == 'LONG':
+                        be_trigger = entry + (initial_risk * be_r_ratio)
+                        be_sl_price = round(entry * 1.001, 2)
+                    else:
+                        be_trigger = entry - (initial_risk * be_r_ratio)
+                        be_sl_price = round(entry * 0.999, 2)
 
                     try:
                         trade_time = datetime.fromisoformat(ts_str.replace(' UTC', '+00:00'))
@@ -116,23 +129,33 @@ class PaperTradingService:
                             current_mae = max(0.0, (entry - c_low) / entry * 100)
                             current_mfe = max(0.0, (c_high - entry) / entry * 100)
                             
-                            long_hit_both = (c_high >= tp1) and (c_low <= sl) if not tp1_hit else (c_high >= tp2) and (c_low <= sl)
+                            candle_sl = current_sl
+                            target_tp = tp2 if tp1_hit else tp1
+                            long_hit_both = (c_high >= target_tp) and (c_low <= candle_sl)
                             
                             if long_hit_both:
                                 logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
-                                status, exit_price = 'LOSS', sl
-                                if tp1_hit: status = 'WIN_TP1'
+                                if tp1_hit:
+                                    status, exit_price = 'WIN_TP1', candle_sl
+                                elif candle_sl >= entry:
+                                    status, exit_price = 'BREAKEVEN', candle_sl
+                                else:
+                                    status, exit_price = 'LOSS', candle_sl
                                 exit_candle = candle
                                 break
-                            elif c_low <= sl:
-                                status, exit_price = 'LOSS', sl
-                                if tp1_hit: status = 'WIN_TP1'
+                            elif c_low <= candle_sl:
+                                if tp1_hit:
+                                    status, exit_price = 'WIN_TP1', candle_sl
+                                elif candle_sl >= entry:
+                                    status, exit_price = 'BREAKEVEN', candle_sl
+                                else:
+                                    status, exit_price = 'LOSS', candle_sl
                                 exit_candle = candle
                                 break
                             elif c_high >= tp1 and not tp1_hit:
                                 tp1_hit = 1
-                                sl = entry
-                                logger.info(f"TP1 hit for LONG {symbol}! Moving SL to BE ({entry}).")
+                                current_sl = max(current_sl, be_sl_price)
+                                logger.info(f"TP1 hit for LONG {symbol}! Moving SL to BE ({be_sl_price}).")
                                 if c_high >= tp2:
                                     status, exit_price = 'WIN_TP2', tp2
                                     exit_candle = candle
@@ -141,28 +164,41 @@ class PaperTradingService:
                                 status, exit_price = 'WIN_TP2', tp2
                                 exit_candle = candle
                                 break
+                            elif c_high >= be_trigger and current_sl < be_sl_price:
+                                current_sl = be_sl_price
+                                logger.info(f"Auto-Breakeven 1.0R reached for LONG {symbol}! Moving SL to BE ({be_sl_price}).")
                                 
                         elif direction.upper() == 'SHORT':
                             current_mae = max(0.0, (c_high - entry) / entry * 100)
                             current_mfe = max(0.0, (entry - c_low) / entry * 100)
                             
-                            short_hit_both = (c_low <= tp1) and (c_high >= sl) if not tp1_hit else (c_low <= tp2) and (c_high >= sl)
+                            candle_sl = current_sl
+                            target_tp = tp2 if tp1_hit else tp1
+                            short_hit_both = (c_low <= target_tp) and (c_high >= candle_sl)
                             
                             if short_hit_both:
                                 logger.warning(f"[EXECUTION: DUAL_WICK_RESOLVED] Symbol: {symbol} breached both TP and SL in candle. Result: Pessimistic SL Hit.")
-                                status, exit_price = 'LOSS', sl
-                                if tp1_hit: status = 'WIN_TP1'
+                                if tp1_hit:
+                                    status, exit_price = 'WIN_TP1', candle_sl
+                                elif candle_sl <= entry:
+                                    status, exit_price = 'BREAKEVEN', candle_sl
+                                else:
+                                    status, exit_price = 'LOSS', candle_sl
                                 exit_candle = candle
                                 break
-                            elif c_high >= sl:
-                                status, exit_price = 'LOSS', sl
-                                if tp1_hit: status = 'WIN_TP1'
+                            elif c_high >= candle_sl:
+                                if tp1_hit:
+                                    status, exit_price = 'WIN_TP1', candle_sl
+                                elif candle_sl <= entry:
+                                    status, exit_price = 'BREAKEVEN', candle_sl
+                                else:
+                                    status, exit_price = 'LOSS', candle_sl
                                 exit_candle = candle
                                 break
                             elif c_low <= tp1 and not tp1_hit:
                                 tp1_hit = 1
-                                sl = entry
-                                logger.info(f"TP1 hit for SHORT {symbol}! Moving SL to BE ({entry}).")
+                                current_sl = min(current_sl, be_sl_price)
+                                logger.info(f"TP1 hit for SHORT {symbol}! Moving SL to BE ({be_sl_price}).")
                                 if c_low <= tp2:
                                     status, exit_price = 'WIN_TP2', tp2
                                     exit_candle = candle
@@ -171,6 +207,9 @@ class PaperTradingService:
                                 status, exit_price = 'WIN_TP2', tp2
                                 exit_candle = candle
                                 break
+                            elif c_low <= be_trigger and current_sl > be_sl_price:
+                                current_sl = be_sl_price
+                                logger.info(f"Auto-Breakeven 1.0R reached for SHORT {symbol}! Moving SL to BE ({be_sl_price}).")
                                 
                         mae = max(mae, current_mae)
                         mfe = max(mfe, current_mfe)
@@ -185,16 +224,20 @@ class PaperTradingService:
                     if status != 'PENDING':
                         tp1_gain_pct = (tp1 - entry) / entry if direction.upper() == 'LONG' else (entry - tp1) / entry
                         tp2_gain_pct = (tp2 - entry) / entry if direction.upper() == 'LONG' else (entry - tp2) / entry
-                        loss_pct = (entry - sl) / entry if direction.upper() == 'LONG' else (sl - entry) / entry
+                        rem_gain_pct = (exit_price - entry) / entry if direction.upper() == 'LONG' else (entry - exit_price) / entry
+                        loss_pct = (entry - exit_price) / entry if direction.upper() == 'LONG' else (exit_price - entry) / entry
                         
                         if status == 'LOSS':
                             gross_pnl_pct = -1.0 * loss_pct * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
+                        elif status == 'BREAKEVEN':
+                            gross_pnl_pct = rem_gain_pct * lev * 100
+                            net_pnl_pct = gross_pnl_pct - fee_drag
                         elif status == 'WIN_TP1':
-                            gross_pnl_pct = (0.5 * tp1_gain_pct) * lev * 100
-                            net_pnl_pct = gross_pnl_pct - (fee_drag * 0.75)
+                            gross_pnl_pct = (close_ratio * tp1_gain_pct + rem_ratio * rem_gain_pct) * lev * 100
+                            net_pnl_pct = gross_pnl_pct - fee_drag
                         elif status == 'WIN_TP2':
-                            gross_pnl_pct = (0.5 * tp1_gain_pct + 0.5 * tp2_gain_pct) * lev * 100
+                            gross_pnl_pct = (close_ratio * tp1_gain_pct + rem_ratio * tp2_gain_pct) * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
                         elif status == 'EXPIRED':
                             pct_move = (exit_price - entry) / entry if direction.upper() == 'LONG' else (entry - exit_price) / entry
@@ -225,7 +268,7 @@ class PaperTradingService:
                                     'symbol': symbol,
                                     'direction': direction,
                                     'entry_price': entry,
-                                    'sl_price': sl,
+                                    'sl_price': exit_price,
                                     'leverage': lev,
                                     'net_pnl_pct': net_pnl_pct
                                 }
@@ -243,13 +286,13 @@ class PaperTradingService:
                                 logger.error(f"Failed to initiate autopsy task for {trade_id}: {e}")
                         
                     else:
-                        await conn.execute('UPDATE trades SET tp1_hit = ?, sl_price = ? WHERE trade_id = ?', (tp1_hit, sl, trade_id))
+                        await conn.execute('UPDATE trades SET tp1_hit = ?, sl_price = ?, trailing_sl = ? WHERE trade_id = ?', (tp1_hit, current_sl, current_sl, trade_id))
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                 await conn.commit()
         except Exception as e:
             logger.error(f"Failed to update trades: {e}")
 
-    async def get_open_positions(self, symbol: str):
+    async def get_open_positions(self, symbol: str) -> List[Dict[str, Any]]:
         try:
             async with get_db_connection(self.db_path) as conn:
                 cursor = await conn.execute('''

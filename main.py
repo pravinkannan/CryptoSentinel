@@ -7,10 +7,8 @@ import asyncio
 import logging
 import json
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
 
 from core.config import settings
-from core.exceptions import ExchangeAPIError, CryptoSentinelException
 from core.state_manager import StateManager
 from data.market_data_service import MarketDataService
 from engine.signal_generator import SignalGeneratorService
@@ -42,6 +40,7 @@ class CryptoSentinelApp:
             sl_atr_multiplier=settings.sl_atr_multiplier,
             target_rr_ratio=settings.target_rr_ratio
         )
+        self.risk_manager = self.signal_generator.risk_manager
         self.news_aggregator = NewsAggregatorService(
             rss_feeds=settings.rss_feeds,
             state_manager=self.state_manager
@@ -49,7 +48,8 @@ class CryptoSentinelApp:
         self.ai_evaluator = AIEvaluatorService(
             api_key=settings.gemini_api_key,
             model_name=settings.gemini_model_name,
-            timeout=settings.llm_timeout_seconds
+            timeout=settings.llm_timeout_seconds,
+            fallback_models=settings.gemini_fallback_models
         )
         self.notifier = NotificationService(
             telegram_token=settings.telegram_bot_token,
@@ -160,12 +160,18 @@ class CryptoSentinelApp:
                                 logger.info(f"Evaluated: {symbol} {tf} | Score: {confidence}% | Status: {status}")
                                 
                                 if status == "DISPATCH":
+                                    is_vip = (confidence >= settings.vip_confidence_threshold)
+                                    signal_data = self.risk_manager.recalibrate_for_tier(
+                                        signal_data,
+                                        is_vip=is_vip,
+                                        liquidity_magnets=signal_data.get('liquidity_magnets', [])
+                                    )
                                     # Funding Rate Filter Check
                                     fr = signal_data.get('funding_rate', 0.0)
-                                    if direction == 'SHORT' and fr < -0.04 and confidence < 85:
+                                    if direction == 'SHORT' and fr < -0.04 and not is_vip:
                                         logger.info(f"Trade filtered out due to funding rate: {fr}%")
                                         continue
-                                    if direction == 'LONG' and fr > 0.06 and confidence < 85:
+                                    if direction == 'LONG' and fr > 0.06 and not is_vip:
                                         logger.info(f"Trade filtered out due to funding rate: {fr}%")
                                         continue
 
@@ -313,7 +319,7 @@ class CryptoSentinelApp:
                                         logger.info(f"Bias Flip Alert generated for {symbol}: {inval_summary} -> {direction}")
 
                                     # Channel tagging based on VIP threshold
-                                    if confidence >= settings.vip_confidence_threshold:
+                                    if is_vip:
                                         signal_data['dispatch_channels'] = ["VIP"]
                                     else:
                                         signal_data['dispatch_channels'] = ["STANDARD"]
@@ -332,7 +338,9 @@ class CryptoSentinelApp:
                                         'leverage': float(signal_data.get('leverage_val', 1.0)),
                                         'ttl_mins': signal_data.get('ttl_mins', settings.trade_ttl_minutes),
                                         'confidence_score': confidence,
-                                        'scoring_checklist': ai_data.get('scoring_checklist', [])
+                                        'scoring_checklist': ai_data.get('scoring_checklist', []),
+                                        'setup_type': signal_data.get('setup_type', 'STANDARD_SWING'),
+                                        'breakeven_price': signal_data.get('breakeven_price', 0.0)
                                     })
                                     signal_data['trade_id'] = trade_id
 

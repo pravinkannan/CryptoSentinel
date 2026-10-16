@@ -132,4 +132,8 @@ class SignalData(BaseModel):
     macro_trend_aligned: bool = False
     macro_4h_conflict: bool = False
     blocking_ob_wall: bool = False
+    has_sweep_risk: bool = False
+    setup_type: str = "STANDARD_SWING"
+    breakeven_price: float = 0.0
     eval_trace: Dict[str, Any] = Field(default_factory=dict)
+

@@ -134,11 +134,8 @@ class NotificationService:
                 logger.error(f"Failed to parse AI JSON response: {e}")
                 ai_data = {}
 
-        patterns_str = ", ".join(signal_data.get('patterns', []))
-        
         direction = signal_data.get('direction', 'Neutral')
         action_str = "LONG 🟢" if direction == "Bullish" else "SHORT 🔴" if direction == "Bearish" else "NEUTRAL ⚪"
-        invalidation_dir = "below" if direction == "Bullish" else "above"
         
         entry = signal_data.get('entry', 0.0)
         entry_min = round(entry * 0.9995, max(2, len(str(entry).split('.')[-1])))
@@ -158,9 +155,13 @@ class NotificationService:
             logger.info(f"Silently ignoring broadcast for SHADOW trade: {symbol}")
             return
             
+        setup_type = signal_data.get('setup_type', '')
         channel_tags = []
         if "VIP" in channels:
-            channel_tags.append("[👑 VIP EXCLUSIVE]")
+            if setup_type == "VIP_SNIPER":
+                channel_tags.append("[👑 VIP SNIPER EXCLUSIVE]")
+            else:
+                channel_tags.append("[👑 VIP EXCLUSIVE]")
         if "STANDARD_SPOTLIGHT" in channels:
             channel_tags.append("[⭐️ DAILY VIP SPOTLIGHT TRADE]")
         elif "STANDARD" in channels:
@@ -201,11 +202,19 @@ class NotificationService:
         else:
             lev = float(lev)
 
+        close_ratio_pct = int(getattr(settings, 'tp1_close_ratio', 0.70) * 100)
+        rem_ratio_pct = 100 - close_ratio_pct
         roe_sl = round(abs(float(signal_data.get('roe_sl') or (sl_pct * lev))), 2)
         roe_tp1 = round(abs(float(signal_data.get('roe_tp1') or signal_data.get('roe_tp') or (tp1_pct * lev))), 2)
-        overall_tp2_roe = round(abs(float(signal_data.get('overall_tp2_roe') or ((0.5 * tp1_pct + 0.5 * tp2_pct) * lev))), 2)
+        overall_tp2_roe = round(abs(float(signal_data.get('overall_tp2_roe') or (((close_ratio_pct / 100.0) * tp1_pct + ((rem_ratio_pct / 100.0) * tp2_pct)) * lev))), 2)
 
-        tier_badge = " | 👑 VIP TIER" if confidence >= settings.vip_confidence_threshold else " | 🔹 STANDARD TIER"
+        if setup_type == "VIP_SNIPER":
+            tier_badge = " | 👑 VIP SNIPER (100% ROE)"
+        elif confidence >= settings.vip_confidence_threshold:
+            tier_badge = " | 👑 VIP TIER"
+        else:
+            tier_badge = " | 🔹 STANDARD TIER"
+
         ttl_mins_val = signal_data.get('ttl_mins', 1080)
         ttl_display = f"{ttl_mins_val // 60}h" if ttl_mins_val % 60 == 0 else f"{ttl_mins_val} mins"
         
@@ -214,6 +223,9 @@ class NotificationService:
         if reversal_notice:
             reversal_str = f"🔄 <b>BIAS FLIP / INVALIDATION NOTICE</b>\n{reversal_notice}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
 
+        be_price = signal_data.get('breakeven_price')
+        be_str = f" | Auto-BE @ ${be_price}" if be_price else ""
+
         msg = (
             f"{reversal_str}"
             f"{tag_str}\n"
@@ -221,11 +233,11 @@ class NotificationService:
             f"Action: <b>{action_str}</b> | Confidence: <b>{confidence}%</b>{tier_badge}\n"
             f"Recommended Leverage: <b>{signal_data.get('recommended_leverage', '1x')}</b>\n"
             f"Entry: <b>${entry_min} – ${entry_max}</b>\n"
-            f"Stop Loss: <b>${sl_val} (-{sl_pct}% | ROE: -{roe_sl}%)</b>\n"
-            f"⏳ Target Horizon: {signal_data.get('target_resolution', 'Intraday')} (Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
+            f"Stop Loss: <b>${sl_val} (-{sl_pct}% | ROE: -{roe_sl}%){be_str}</b>\n"
+            f"⏳ Target Horizon: {signal_data.get('target_resolution', 'Intraday')} (TTL {ttl_display} | Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
             f"🎯 Take Profit Targets:\n"
-            f"• TP1: <b>${tp1} (+{tp1_pct}% | ROE: +{roe_tp1}%)</b> -> Closes 50% & Moves SL to Breakeven\n"
-            f"• TP2: <b>${tp2} (+{tp2_pct}% | Total ROE: +{overall_tp2_roe}%)</b> -> Closes 50% Runner"
+            f"• TP1: <b>${tp1} (+{tp1_pct}% | ROE: +{roe_tp1}%)</b> -> Closes {close_ratio_pct}% & Moves SL to Breakeven\n"
+            f"• TP2: <b>${tp2} (+{tp2_pct}% | Total ROE: +{overall_tp2_roe}%)</b> -> Closes {rem_ratio_pct}% Runner"
         )
 
         # Detailed internal technical diagnostics appended only if verbose mode is enabled

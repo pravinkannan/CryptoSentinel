@@ -55,13 +55,16 @@ STAGE2_TREND_MAX_POINTS: float = 10.0
 STAGE2_FRICTION_VOL_DRAG_THRESHOLD: float = 0.80
 STAGE2_FRICTION_VOL_DRAG_PENALTY: float = -3.0
 STAGE2_FRICTION_WALL_PENALTY: float = -3.0
+STAGE2_FRICTION_SWEEP_RISK_PENALTY: float = -3.0
 STAGE2_ABSORPTION_VOL_THRESHOLD: float = 6.0
 STAGE2_ABSORPTION_MULTIPLIER: float = 0.5
 
 # Stage 3: Tier Thresholds & VIP Gate
-STAGE3_VIP_THRESHOLD: float = 90.0
-STAGE3_STANDARD_THRESHOLD: float = 80.0
-STAGE3_VIP_CAPPED_SCORE: float = 89.9
+STAGE3_VIP_THRESHOLD: float = 92.0
+STAGE3_STANDARD_THRESHOLD: float = 86.0
+STAGE3_VIP_CAPPED_SCORE: float = 91.9
+STAGE3_VIP_MIN_BOOK_DEPTH_USD: float = 250000.0
+
 
 
 # ==============================================================================
@@ -99,7 +102,6 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     direction_raw = str(signal_data.get('direction', 'NEUTRAL')).upper()
     is_long = direction_raw in ['LONG', 'BULLISH', 'BUY']
     is_short = direction_raw in ['SHORT', 'BEARISH', 'SELL']
-    direction = 'LONG' if is_long else 'SHORT' if is_short else 'NEUTRAL'
     
     # --------------------------------------------------------------------------
     # STAGE 1: Hard Binary Sanity Gate (The Circuit Breaker)
@@ -109,9 +111,20 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     htf4h = str(signal_data.get('htf_4h_trend', ''))
     macro_4h_conflict = signal_data.get('macro_4h_conflict')
     if macro_4h_conflict is None:
-        macro_4h_conflict = (htf4h.startswith('Macro Down') and is_long) or (htf4h.startswith('Macro Up') and is_short)
+        opposes_4h = (htf4h.startswith('Macro Down') and is_long) or (htf4h.startswith('Macro Up') and is_short)
+        tf = str(signal_data.get('timeframe', ''))
+        if opposes_4h and tf in ['5m', '15m']:
+            v = float(signal_data.get('volume', 0.0))
+            vs = float(signal_data.get('vol_sma_20', 0.0))
+            v_ratio = float(signal_data.get('volume_ratio', (v / vs) if vs > 0 else 1.0))
+            rejection = bool(signal_data.get('key_level_rejection', False))
+            # Counter-trend scalps require key level rejection AND volume >= 2.5x SMA
+            macro_4h_conflict = not (rejection and v_ratio >= 2.5)
+        else:
+            macro_4h_conflict = opposes_4h
         
     if macro_4h_conflict:
+
         return {
             "status": "REJECTED",
             "tier": "REJECTED",
@@ -308,6 +321,14 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
         friction += STAGE2_FRICTION_WALL_PENALTY
         checklist.append(f"{STAGE2_FRICTION_WALL_PENALTY:.1f}% Blocking Order Book Wall")
         
+    has_sweep_risk = bool(signal_data.get(
+        'has_sweep_risk',
+        any(m.get('role') == 'SWEEP_RISK' for m in magnets)
+    ))
+    if has_sweep_risk:
+        friction += STAGE2_FRICTION_SWEEP_RISK_PENALTY
+        checklist.append(f"{STAGE2_FRICTION_SWEEP_RISK_PENALTY:.1f}% Order Book Sweep Risk Friction")
+        
     # Absorption Rule: If vol_points > 6.0, cut friction penalty in half
     if vol_points > STAGE2_ABSORPTION_VOL_THRESHOLD and friction < 0.0:
         friction *= STAGE2_ABSORPTION_MULTIPLIER
@@ -322,16 +343,24 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     # --------------------------------------------------------------------------
     vip_capped = False
     if final_score >= STAGE3_VIP_THRESHOLD:
-        # MUST have vol_points > 0 AND level_points > 0 (The 3-Pillar Mandate)
-        if vol_points > 0.0 and level_points > 0.0:
+        missing = []
+        if vol_points <= 0.0:
+            missing.append("Volume Surge")
+        if level_points <= 0.0:
+            missing.append("Key Level Rejection")
+        if has_sweep_risk:
+            missing.append("No Sweep Risk (Opposing pool detected)")
+        if not macro_trend_aligned:
+            missing.append("Multi-Timeframe Macro Alignment")
+        if book_depth < STAGE3_VIP_MIN_BOOK_DEPTH_USD:
+            missing.append(f"Order Book Depth (>= ${STAGE3_VIP_MIN_BOOK_DEPTH_USD/1000:.0f}k)")
+
+        if not missing:
             tier = "VIP"
         else:
             final_score = STAGE3_VIP_CAPPED_SCORE
             tier = "STANDARD"
             vip_capped = True
-            missing = []
-            if vol_points <= 0.0: missing.append("Volume Surge")
-            if level_points <= 0.0: missing.append("Key Level Rejection")
             checklist.append(f"[VIP Gate] Capped at {STAGE3_VIP_CAPPED_SCORE:.1f}% (Missing {' & '.join(missing)})")
     elif final_score >= STAGE3_STANDARD_THRESHOLD:
         tier = "STANDARD"
@@ -350,6 +379,9 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
         "final_score": final_score,
         "tier": tier,
         "vip_capped": vip_capped,
+        "has_sweep_risk": has_sweep_risk,
+        "macro_trend_aligned": macro_trend_aligned,
+        "book_depth": round(book_depth, 2),
         "breakdown": {
             "volume_ratio": round(ratio, 2),
             "directional_aligned": directional_aligned,
@@ -364,9 +396,11 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
             "rsi_14": round(rsi_14, 2),
             "rsi_momentum_room": rsi_room,
             "blocking_ob_wall": blocking_ob_wall,
+            "has_sweep_risk": has_sweep_risk,
             "friction_absorbed": (vol_points > STAGE2_ABSORPTION_VOL_THRESHOLD and friction < 0.0)
         }
     }
+
     
     return {
         "status": tier,
@@ -386,10 +420,20 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
 class AIEvaluatorService:
     """Evaluates trading signals with institutional confluence scoring and Gemini auditing."""
 
-    def __init__(self, api_key: str, model_name: str = 'gemini-3.8-flash', timeout: float = 8.0) -> None:
+    def __init__(
+        self, 
+        api_key: str, 
+        model_name: str = 'gemini-3.5-flash-lite', 
+        timeout: float = 8.0,
+        fallback_models: Optional[List[str]] = None
+    ) -> None:
         self.api_key: str = api_key
         self.model_name: str = model_name
         self.timeout: float = timeout
+        self.fallback_models: List[str] = fallback_models if fallback_models is not None else [
+            'gemini-flash-lite-latest',
+            'gemini-3.1-flash-lite'
+        ]
         self.client = genai.Client(api_key=self.api_key)
 
     def evaluate_confluence_score(self, symbol: str, signal_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -463,29 +507,47 @@ Audit Requirements:
 Provide JSON output adhering exactly to the schema.
 """
 
-        try:
-            response = await asyncio.wait_for(
-                self.client.aio.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=SignalEvaluation,
-                    ),
-                ),
-                timeout=self.timeout
-            )
-            raw_text = response.text
-            if not raw_text:
-                logger.warning(f"Empty AI response text received for {symbol}.")
-                return None
+        models_to_try = [self.model_name] + [m for m in self.fallback_models if m != self.model_name]
+        ai_data = None
 
-            text = raw_text.strip()
-            if text.startswith("```json"): text = text[7:]
-            if text.endswith("```"): text = text[:-3]
-            
-            ai_data = json.loads(text.strip())
-            
+        for current_model in models_to_try:
+            try:
+                response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=current_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=SignalEvaluation,
+                        ),
+                    ),
+                    timeout=self.timeout
+                )
+                raw_text = response.text
+                if not raw_text:
+                    logger.warning(f"Empty AI response text received from {current_model} for {symbol}.")
+                    continue
+
+                text = raw_text.strip()
+                if text.startswith("```json"): text = text[7:]
+                if text.endswith("```"): text = text[:-3]
+                
+                ai_data = json.loads(text.strip())
+                ai_data['eval_model'] = current_model
+                break
+            except asyncio.TimeoutError:
+                logger.warning(f"AI evaluation timed out for model {current_model}.")
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    logger.warning(f"Gemini quota/rate limit exhausted for model {current_model} (429). Attempting fallback...")
+                elif "503" in err_str or "UNAVAILABLE" in err_str:
+                    logger.warning(f"Gemini model {current_model} temporarily unavailable (503). Attempting fallback...")
+                else:
+                    logger.warning(f"AI evaluation failed for model {current_model}: {e}")
+
+        # If an AI response was successfully obtained:
+        if ai_data is not None:
             # Apply Qualitative AI adjustments to parametric score
             live_news_penalty = int(ai_data.get('live_news_penalty', 0))
             wall_penalty = int(ai_data.get('institutional_wall_penalty', 0))
@@ -528,15 +590,28 @@ Provide JSON output adhering exactly to the schema.
                 "eval_trace": eval_trace,
                 "is_degraded": (signal_data.get('pattern_drift_status') == 'DEGRADED')
             }
-            
             return json.dumps(output)
-            
-        except asyncio.TimeoutError:
-            logger.error("AI Evaluation timed out.")
-            return None
-        except Exception as e:
-            logger.error(f"Error during AI evaluation: {e}")
-            return None
+
+        # Fallback: All AI models failed (Quota exhausted, service unavailable, or offline)
+        # Preserve quantitative parametric confluence score so valid setups aren't dropped!
+        logger.info(f"Preserving quantitative parametric confluence for {symbol} (AI auditing offline/exhausted).")
+        checklist = list(score_result["scoring_checklist"])
+        checklist.append("⚠️ Parametric Preserved: AI audit bypassed (quota/offline)")
+        
+        output = {
+            "trade_direction": direction,
+            "overall_verdict": "APPROVE" if score_result["tier"] in ["VIP", "STANDARD"] else "REJECT",
+            "strategy_analysis": (
+                f"Quantitative Parametric Confluence score: {score_result['final_score']}%. "
+                f"Tier: {score_result['tier']}. Evaluated via deterministic parametric confluence engine."
+            ),
+            "final_confidence_rating": score_result["final_score"],
+            "tier": score_result["tier"],
+            "scoring_checklist": checklist,
+            "eval_trace": score_result["eval_trace"],
+            "is_degraded": (signal_data.get('pattern_drift_status') == 'DEGRADED')
+        }
+        return json.dumps(output)
 
     async def generate_autopsy(
         self, 
@@ -572,28 +647,39 @@ Conduct a forensic analysis to determine:
 
 Provide JSON output adhering strictly to the schema.
 """
-        try:
-            response = await asyncio.wait_for(
-                self.client.aio.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=AutopsyReport,
+        models_to_try = [self.model_name] + [m for m in self.fallback_models if m != self.model_name]
+        for current_model in models_to_try:
+            try:
+                response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=current_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=AutopsyReport,
+                        ),
                     ),
-                ),
-                timeout=self.timeout
-            )
-            raw = response.text or ""
-            text = raw.strip()
-            if text.startswith("```json"): text = text[7:]
-            res = json.loads(text.strip())
-            return dict(res) if isinstance(res, dict) else {}
-        except Exception as e:
-            logger.error(f"Error generating AI autopsy: {e}")
-            return {
-                "failure_category": "SL_TOO_TIGHT",
-                "summary": f"Trade stopped out due to adverse market volatility. (AI post-mortem note: {e})",
-                "key_culprit": "Price breached stop loss boundary before reaching profit target.",
-                "actionable_lesson": "Consider widening ATR buffer multiplier in higher volatility regimes."
-            }
+                    timeout=self.timeout
+                )
+                raw = response.text or ""
+                text = raw.strip()
+                if text.startswith("```json"): text = text[7:]
+                if text.endswith("```"): text = text[:-3]
+                res = json.loads(text.strip())
+                if isinstance(res, dict) and "failure_category" in res:
+                    return dict(res)
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    logger.warning(f"Gemini quota exhausted for autopsy with {current_model}. Attempting fallback...")
+                else:
+                    logger.warning(f"AI autopsy failed with {current_model}: {e}")
+
+        logger.info(f"Generating deterministic autopsy for trade {trade_summary.get('trade_id', 'unknown')}.")
+        return {
+            "failure_category": "SL_TOO_TIGHT",
+            "summary": "Trade stopped out due to adverse market volatility. Stop loss boundary breached before target.",
+            "key_culprit": "Price breached stop loss boundary before reaching profit target.",
+            "actionable_lesson": "Consider widening ATR buffer multiplier in higher volatility regimes."
+        }
+

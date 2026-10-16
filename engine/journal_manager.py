@@ -89,6 +89,10 @@ class JournalManager:
                 await conn.execute(f'ALTER TABLE trades ADD COLUMN ttl_mins INTEGER DEFAULT {settings.trade_ttl_minutes}')
             except Exception:
                 pass
+            try:
+                await conn.execute('ALTER TABLE trades ADD COLUMN trailing_sl REAL')
+            except Exception:
+                pass
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS evaluations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

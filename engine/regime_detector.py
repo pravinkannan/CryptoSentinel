@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import logging
 from core.models import RegimeData
 

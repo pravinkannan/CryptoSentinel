@@ -15,7 +15,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     gemini_api_key: str = Field(default="", description="Google Gemini API Key")
-    gemini_model_name: str = Field(default="gemini-3.8-flash", description="Google Gemini model identifier")
+    gemini_model_name: str = Field(default="gemini-3.5-flash-lite", description="Google Gemini primary model identifier")
+    gemini_fallback_models: List[str] = Field(
+        default=["gemini-flash-lite-latest", "gemini-3.1-flash-lite"],
+        description="Google Gemini fallback models in case primary model quota is exhausted or rate-limited"
+    )
     telegram_bot_token: str = Field(default="", description="Telegram Bot Token")
     telegram_chat_id: str = Field(default="", description="Telegram Chat ID")
     cryptopanic_api_key: str = Field(default="", description="CryptoPanic API Key")
@@ -71,10 +75,19 @@ class Settings(BaseSettings):
 
     trade_ttl_hours: float = Field(default=18.0, description="Default trade expiration window / TTL in hours")
     trade_ttl_minutes: int = Field(default=1080, description="Default trade expiration window / TTL in minutes (18 hours = 1080m)")
-    vip_confidence_threshold: int = Field(default=90, description="Minimum confidence score for VIP tier classification")
-    min_dispatch_confidence: int = Field(default=80, description="Minimum confidence score required to dispatch a signal")
+    vip_confidence_threshold: int = Field(default=92, description="Minimum confidence score for VIP tier classification")
+    min_dispatch_confidence: int = Field(default=86, description="Minimum confidence score required to dispatch a signal")
     liquidity_magnet_depth_pct: float = Field(default=0.02, description="Top depth pct of order book to scan for liquidity magnets")
     liquidity_magnet_multiplier: float = Field(default=3.0, description="Volume multiplier threshold for magnet cluster anomaly")
+
+    # Tiered Leverage & Execution Settings
+    vip_max_leverage_btc: float = Field(default=60.0, description="Max leverage for VIP BTC setups")
+    vip_max_leverage_eth: float = Field(default=40.0, description="Max leverage for VIP ETH setups")
+    vip_max_leverage_alt: float = Field(default=20.0, description="Max leverage for VIP Altcoin setups")
+    std_max_leverage_btc_eth: float = Field(default=25.0, description="Max leverage for Standard BTC/ETH setups")
+    std_max_leverage_alt: float = Field(default=12.0, description="Max leverage for Standard Altcoin setups")
+    breakeven_trigger_r_ratio: float = Field(default=1.0, description="R:R gain ratio to trigger auto-breakeven")
+    tp1_close_ratio: float = Field(default=0.70, description="Position fraction to close at TP1 (70%)")
 
 settings = Settings()
 
