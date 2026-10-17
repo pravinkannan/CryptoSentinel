@@ -176,3 +176,53 @@ def test_calendar_guard_sync_parses_events():
         assert guard.last_sync_time is not None
 
     asyncio.run(run_test())
+
+
+def test_rejected_signals_logging_and_retrieval(tmp_path):
+    """Verify that near-miss rejected signals are logged into rejected_signals table and queried accurately."""
+    async def run_test():
+        db_file = str(tmp_path / "test_sentinel.db")
+        journal = JournalManager(db_path=db_file)
+        await journal.ensure_db_exists()
+
+        # Log a near-miss candidate setup (Score: 78.5%)
+        row_id = await journal.log_rejected_signal({
+            'symbol': 'ETH/USDT',
+            'timeframe': '15m',
+            'direction': 'LONG',
+            'pattern_name': 'Bullish Belthold',
+            'confidence_score': 78.5,
+            'eval_trace': {
+                'base_score': 64.0,
+                'vol_points': 5.0,
+                'level_points': 3.0,
+                'vwap_points': 0.0,
+                'ob_points': 3.0,
+                'trend_tailwinds': 6.5,
+                'catalyst_points': 0.0,
+                'friction': -3.0,
+                'net_score': 78.5
+            },
+            'scoring_checklist': [
+                '+5.0% Dynamic Volume Surge',
+                '+3.0% Key Level Precision',
+                '-3.0% Fighting Session VWAP'
+            ],
+            'rejection_reason': 'Score 78.5% below 86.0% threshold'
+        })
+        assert row_id > 0
+
+        # Retrieve recent near-miss signals
+        records = await journal.get_recent_rejected_signals(limit=5)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec['symbol'] == 'ETH/USDT'
+        assert rec['timeframe'] == '15m'
+        assert rec['direction'] == 'LONG'
+        assert rec['confidence_score'] == 78.5
+        assert rec['friction'] == -3.0
+        assert rec['vol_points'] == 5.0
+        assert any("Fighting Session VWAP" in c for c in rec['scoring_checklist'])
+        assert rec['eval_trace']['base_score'] == 64.0
+
+    asyncio.run(run_test())

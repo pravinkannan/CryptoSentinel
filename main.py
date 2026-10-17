@@ -356,6 +356,23 @@ class CryptoSentinelApp:
                                     current_drawdown = await self.paper_trader.get_current_drawdown()
                                     await self.notifier.notify_signal(symbol, signal_data, ai_response, current_drawdown)
                                 else:
+                                    reason = ai_data.get('strategy_analysis', 'No reason provided')
+                                    # Near-Miss Audit Logging: Store signals with confidence >= near_miss_min_score (default 75.0%)
+                                    # into sentinel.db for quantitative post-mortem analysis of confluences and deductions
+                                    if confidence >= getattr(settings, 'near_miss_min_score', 75.0):
+                                        await self.journal_manager.log_rejected_signal({
+                                            'timestamp': signal_data.get('timestamp', now.isoformat()),
+                                            'symbol': symbol,
+                                            'timeframe': tf,
+                                            'direction': direction,
+                                            'pattern_name': pattern_name,
+                                            'confidence_score': confidence,
+                                            'eval_trace': ai_data.get('eval_trace', {}),
+                                            'scoring_checklist': ai_data.get('scoring_checklist', []),
+                                            'rejection_reason': reason
+                                        })
+                                        logger.info(f"📊 Near-miss rejected candidate saved to DB ({confidence}%): {symbol} {tf} [{pattern_name}]")
+
                                     if is_degraded:
                                         logger.info(f"Trade REJECTED but logging as SHADOW due to DEGRADED pattern: {symbol} {tf}")
                                         trade_id = await self.journal_manager.log_trade({
@@ -375,8 +392,13 @@ class CryptoSentinelApp:
                                             'outcome': 'SHADOW'
                                         })
                                     else:
-                                        reason = ai_data.get('strategy_analysis', 'No reason provided')
-                                        logger.info(f"Trade filtered out. Direction: {direction}, Confidence: {confidence}%. Verdict: {verdict}. AI Reason: {reason}")
+                                        if confidence < settings.min_dispatch_confidence:
+                                            filter_reason = f"Score {confidence:.1f}% below {settings.min_dispatch_confidence:.1f}% dispatch threshold"
+                                        elif "REJECT" in verdict or "SKIP" in verdict:
+                                            filter_reason = f"AI Risk Veto: {reason}"
+                                        else:
+                                            filter_reason = f"Filtered: {reason}"
+                                        logger.info(f"Trade filtered out ({filter_reason}). Direction: {direction}, Confidence: {confidence}%. AI News Audit: {verdict}. Strategy: {reason}")
                             except Exception as e:
                                 logger.error(f"Error evaluating paper trade: {e}")
                             

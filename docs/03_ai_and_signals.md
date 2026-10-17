@@ -27,30 +27,60 @@ Immediately returns `REJECTED` (score: `0.0%`) without executing an LLM call if:
 3. **Anemic Volume Trap**: Volume < 0.55x 20-period SMA AND `key_level_rejection == False`.
 
 #### Stage 2: Parametric Continuous Scoring
-Starts with `base_score = 68.0%` and computes continuous probability points:
-1. **Dynamic Institutional Volume (0.0% to +12.0%)**:
-   - `vol_points = min(12.0, max(0.0, ((volume / vol_sma_20) - 1.0) * 8.0))`
-   - *Directional Fix*: Only awarded if candle closed strongly in trade direction (`close > open` for Long, `close < open` for Short).
-2. **Structural Level Precision (0.0% to +10.0%)**:
-   - *Rejection Fix*: Only awarded if `key_level_rejection == True`.
-   - `level_points = max(0.0, 10.0 * (1.0 - (dist / 0.30)))` if `dist <= 0.30` else `0.0`.
-3. **Order Book Depth (+0.0% to +8.0%)**:
-   - *Thin Book Fix*: Only calculates imbalance points if `total_book_depth_usd > 100,000`.
-   - `ob_points = min(5.0, max(0.0, (imbalance_ratio - 1.0) * 3.5))`.
-   - Adds `+3.0%` if `ob_defensive_shield == True`.
-4. **Trend & Derivatives (+0.0% to +10.0%)**:
-   - `+4.0%` for `macro_trend_aligned == True`.
-   - `+2.0%` for `funding_rate_tailwind == True`.
-   - `+2.0%` for `oi_delta_15m > 1.5`.
-   - `+2.0%` for RSI Momentum Room (RSI between 40-60).
-5. **Microstructure Friction Absorption (0.0% to -9.0%)**:
-   - `-3.0%` if volume < 0.80x SMA.
-   - `-3.0%` if `blocking_ob_wall == True`.
-   - `-3.0%` if `has_sweep_risk == True` (opposing order book liquidity sweep pool detected within 0.8% of entry).
-   - *Smart Money Absorption*: If `vol_points > 6.0`, friction penalties are halved (* 0.5).
+Starts with `base_score = 64.0%` and computes continuous probability points across three orthogonal tiers (+36.0% maximum total tailwinds):
 
-`net_score = base_score + vol_points + level_points + ob_points + trend_tailwinds + friction`  
-`final_score = round(max(0.0, min(100.0, net_score)), 1)`
+##### Tier 1: Foundational Order Flow & Execution Zone (Max +18.0%)
+1. **Dynamic Institutional Volume (0.0% to +8.0%)**:
+   - `vol_points = min(8.0, max(0.0, round(((volume / vol_sma_20) - 1.0) * 5.333333333333334, 2)))`
+   - Reaches maximum points at $2.5\times$ 20-period SMA.
+   - *Directional Constraint*: Only awarded if the candle closed strongly in trade direction (`close > open` for Long, `close < open` for Short).
+2. **Structural Level Precision (0.0% to +6.0%)**:
+   - *Rejection Constraint*: Only awarded if confirmed `key_level_rejection == True`.
+   - Continuous linear decay: `level_points = max(0.0, 6.0 * (1.0 - (dist / 0.30)))` if `dist <= 0.30%`, else `0.0`.
+3. **Session VWAP Acceptance (0.0% to +4.0%)**:
+   - `+4.0%` awarded when price is trading in direction of setup relative to Session VWAP (`close >= vwap` for Long, `close <= vwap` for Short).
+
+##### Tier 2: Institutional Positioning & Macro Bias (Max +11.0%)
+1. **Multi-Timeframe Trend Alignment (+3.0%)**:
+   - `+3.0%` awarded when trade strictly aligns with both 1H and 4H macro trends.
+2. **BTC Macro Beta Alignment (+2.5%)**:
+   - `+2.5%` awarded to altcoin setups moving in sync with Bitcoin macro trend direction.
+3. **Funding Rate Tailwind (+1.0%)**:
+   - `+1.0%` awarded when perpetual funding rate is negative on Longs ($\le -0.005\%$) or positive on Shorts ($\ge +0.005\%$).
+4. **Order Book Defensive Shield (+3.0%)**:
+   - `+3.0%` awarded when a massive institutional limit bid/ask wall ($\ge \$100\text{k}$) protects entry.
+5. **Order Book Depth & Imbalance (0.0% to +1.5%)**:
+   - *Thin Book Filter*: Only calculated if `total_book_depth_usd > 100,000`.
+   - `ob_points = min(1.5, max(0.0, round((imbalance_ratio - 1.0) * 1.5, 2)))`.
+
+##### Tier 3: Momentum Catalysts & Exit Gravity (Max +7.0%)
+1. **Structural RSI Divergence (+3.5%)**:
+   - `+3.5%` awarded for confirmed Bullish/Bearish RSI Divergence on the signal timeframe.
+2. **Target Liquidity Magnet Pull (+2.0%)**:
+   - `+2.0%` awarded when an opposing liquidity pool acts as an institutional price magnet accelerating towards Take Profit.
+3. **Open Interest Expansion (+1.5%)**:
+   - `+1.5%` awarded when 15m Open Interest delta expands by $> +1.5\%$.
+4. **Volatility Squeeze Expansion (+1.0%)**:
+   - `+1.0%` awarded when Bollinger/Keltner squeeze releases with directional volume.
+5. **RSI Momentum Room (+1.0%)**:
+   - `+1.0%` awarded if RSI is in the prime momentum acceleration corridor ($40 \le \text{RSI} \le 60$) without divergence.
+   *(Tier 3 subtotal is capped at +7.0% maximum).*
+
+##### Microstructure Friction & Penalties (Capped at -10.0% max)
+- **Hard Frictional Barriers**:
+  - `-3.0%` Blocking Order Book Wall directly in path of TP.
+  - `-3.0%` Opposing Liquidity Sweep Risk pool within 0.8% of entry.
+  - `-3.5%` Altcoin fighting opposing BTC Macro Trend.
+- **Soft Frictional Drag**:
+  - `-3.0%` Fighting Session VWAP (e.g. longing below VWAP).
+  - `-2.5%` Overcrowded Funding Squeeze Trap ($|\text{FR}| > 0.03\%$).
+  - `-2.0%` Low Volume Drag ($< 0.80\times$ SMA).
+  - `-2.0%` Phase 3 Momentum Exhaustion Trap.
+- **Smart Money Absorption**: If institutional volume is strong (`vol_points >= 5.0`), raw friction penalties are halved ($\times 0.5$).
+- **Deduction Floor**: Total friction is capped at `-10.0%` to prevent deductive cannibalization/double jeopardy.
+
+`net_score = base_score + vol_points + level_points + vwap_points + ob_points + trend_tailwinds + catalyst_points + friction`  
+`final_score = round(max(0.0, min(100.0, net_score)), 1)` (Theoretical ceiling: $64.0 + 36.0 = 100.0\%$)
 
 #### Stage 3: The VIP Gate (Tier Classification)
 - **VIP Dispatch (>= 92.0%)**: To protect the >80% win rate mandate, VIP qualification strictly enforces 5 concurrent institutional requirements:

@@ -121,6 +121,29 @@ class JournalManager:
                     FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
                 )
             ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rejected_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    symbol TEXT,
+                    timeframe TEXT,
+                    direction TEXT,
+                    pattern_name TEXT,
+                    confidence_score REAL,
+                    base_score REAL,
+                    vol_points REAL,
+                    level_points REAL,
+                    vwap_points REAL,
+                    ob_points REAL,
+                    trend_tailwinds REAL,
+                    catalyst_points REAL,
+                    friction REAL,
+                    net_score REAL,
+                    scoring_checklist TEXT,
+                    eval_trace_json TEXT,
+                    rejection_reason TEXT
+                )
+            ''')
             await conn.commit()
 
     async def log_trade(self, trade_data: Dict[str, Any]) -> str:
@@ -297,3 +320,96 @@ class JournalManager:
                     'net_pnl_pct': row[8]
                 }
             return None
+
+    async def log_rejected_signal(self, data: Dict[str, Any]) -> int:
+        """
+        Logs a near-miss rejected signal (e.g. score >= 75.0% and < 86.0%)
+        to sentinel.db for post-mortem analysis of confluences and deductions.
+        """
+        trace = data.get('eval_trace', {})
+        scoring_checklist = data.get('scoring_checklist', [])
+        checklist_str = json.dumps(scoring_checklist) if isinstance(scoring_checklist, list) else str(scoring_checklist)
+        trace_json = json.dumps(trace) if isinstance(trace, dict) else str(trace)
+
+        async with get_db_connection(self.db_path) as conn:
+            cursor = await conn.execute('''
+                INSERT INTO rejected_signals (
+                    timestamp, symbol, timeframe, direction, pattern_name,
+                    confidence_score, base_score, vol_points, level_points,
+                    vwap_points, ob_points, trend_tailwinds, catalyst_points,
+                    friction, net_score, scoring_checklist, eval_trace_json,
+                    rejection_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                data.get('timestamp', datetime.now(timezone.utc).isoformat()),
+                data.get('symbol', ''),
+                data.get('timeframe', ''),
+                data.get('direction', ''),
+                data.get('pattern_name', ''),
+                float(data.get('confidence_score', 0.0)),
+                float(trace.get('base_score', 64.0)),
+                float(trace.get('vol_points', 0.0)),
+                float(trace.get('level_points', 0.0)),
+                float(trace.get('vwap_points', 0.0)),
+                float(trace.get('ob_points', 0.0)),
+                float(trace.get('trend_tailwinds', 0.0)),
+                float(trace.get('catalyst_points', 0.0)),
+                float(trace.get('friction', 0.0)),
+                float(trace.get('net_score', 0.0)),
+                checklist_str,
+                trace_json,
+                data.get('rejection_reason', '')
+            ))
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_recent_rejected_signals(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Retrieves recent near-miss rejected signals for post-mortem analysis."""
+        async with get_db_connection(self.db_path) as conn:
+            cursor = await conn.execute('''
+                SELECT id, timestamp, symbol, timeframe, direction, pattern_name,
+                       confidence_score, base_score, vol_points, level_points,
+                       vwap_points, ob_points, trend_tailwinds, catalyst_points,
+                       friction, net_score, scoring_checklist, eval_trace_json,
+                       rejection_reason
+                FROM rejected_signals
+                ORDER BY id DESC
+                LIMIT ?
+            ''', (limit,))
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                checklist_raw = row[16]
+                try:
+                    checklist = json.loads(checklist_raw)
+                except Exception:
+                    checklist = [checklist_raw] if checklist_raw else []
+
+                trace_raw = row[17]
+                try:
+                    trace = json.loads(trace_raw)
+                except Exception:
+                    trace = {}
+
+                results.append({
+                    'id': row[0],
+                    'timestamp': row[1],
+                    'symbol': row[2],
+                    'timeframe': row[3],
+                    'direction': row[4],
+                    'pattern_name': row[5],
+                    'confidence_score': row[6],
+                    'base_score': row[7],
+                    'vol_points': row[8],
+                    'level_points': row[9],
+                    'vwap_points': row[10],
+                    'ob_points': row[11],
+                    'trend_tailwinds': row[12],
+                    'catalyst_points': row[13],
+                    'friction': row[14],
+                    'net_score': row[15],
+                    'scoring_checklist': checklist,
+                    'eval_trace': trace,
+                    'rejection_reason': row[18]
+                })
+            return results

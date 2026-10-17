@@ -73,6 +73,33 @@ class NotificationService:
             )
             await message.reply(msg, parse_mode="HTML")
 
+        @self.dp.message(Command("nearmiss"))
+        async def nearmiss_command(message: Message):
+            if not self.journal_manager:
+                await message.reply("❌ Journal manager not initialized.", parse_mode="HTML")
+                return
+
+            records = await self.journal_manager.get_recent_rejected_signals(limit=5)
+            if not records:
+                await message.reply("ℹ️ No near-miss rejected setups (score ≥ 75.0%) found in database yet.", parse_mode="HTML")
+                return
+
+            lines = ["🔍 <b>RECENT NEAR-MISS SETUPS (75% - 85.9%)</b>\n━━━━━━━━━━━━━━━━━━━━━"]
+            for r in records:
+                score = r.get('confidence_score', 0.0)
+                needed = round(86.0 - score, 1)
+                checklist = r.get('scoring_checklist', [])
+                penalties = [c for c in checklist if '-' in c or 'Drag' in c or 'Wall' in c or 'Sweep' in c or 'Fighting' in c or 'Trap' in c]
+                penalties_str = ", ".join(penalties) if penalties else "None"
+
+                lines.append(
+                    f"• <b>{r.get('symbol')} ({r.get('timeframe')})</b> | {r.get('direction')} [{r.get('pattern_name')}]\n"
+                    f"  Score: <b>{score:.1f}%</b> (Missing <b>{needed:.1f}%</b> for Standard 86%)\n"
+                    f"  Friction Deductions: <i>{penalties_str}</i>\n"
+                    f"  Reason: {r.get('rejection_reason')}\n"
+                )
+            await message.reply("\n".join(lines), parse_mode="HTML")
+
     async def start_polling(self) -> None:
         """Start the aiogram bot polling loop with automatic reconnection on network drops."""
         if not self.bot:

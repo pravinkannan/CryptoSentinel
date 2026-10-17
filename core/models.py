@@ -38,15 +38,20 @@ class EvalBreakdown(BaseModel):
     directional_aligned: bool = True
     key_level_rejection: bool = False
     dist_to_key_level_pct: float = 0.0
+    vwap_aligned: bool = False
     imbalance_ratio: float = 1.0
     total_book_depth_usd: float = 0.0
     ob_defensive_shield: bool = False
     macro_trend_aligned: bool = False
+    btc_aligned: bool = False
     funding_rate_tailwind: bool = False
     oi_delta_15m: float = 0.0
     rsi_14: float = 50.0
     rsi_momentum_room: bool = False
+    rsi_divergence: bool = False
+    target_magnet: bool = False
     blocking_ob_wall: bool = False
+    has_sweep_risk: bool = False
     friction_absorbed: bool = False
 
 
@@ -56,16 +61,21 @@ class EvalTrace(BaseModel):
     
     stage1_passed: bool = True
     circuit_breaker: Optional[str] = None
-    base_score: float = 68.0
+    base_score: float = 64.0
     vol_points: float = 0.0
     level_points: float = 0.0
+    vwap_points: float = 0.0
     ob_points: float = 0.0
     trend_tailwinds: float = 0.0
+    catalyst_points: float = 0.0
     friction: float = 0.0
-    net_score: float = 68.0
-    final_score: float = 68.0
+    net_score: float = 64.0
+    final_score: float = 64.0
     tier: str = "REJECTED"
     vip_capped: bool = False
+    has_sweep_risk: bool = False
+    macro_trend_aligned: bool = False
+    book_depth: float = 0.0
     breakdown: Optional[Union[EvalBreakdown, Dict[str, Any]]] = None
     qualitative_penalties: Optional[Dict[str, int]] = None
 
@@ -113,6 +123,7 @@ class SignalData(BaseModel):
     oi_direction: str = "Neutral"
     pattern_drift_status: str = "HEALTHY"
     regime: str = "NORMAL"
+    phase: str = "NORMAL"
     dispatch_channels: List[str] = Field(default_factory=list)
     trade_id: int = 0
     reversal_notice: str = ""
@@ -133,6 +144,12 @@ class SignalData(BaseModel):
     macro_4h_conflict: bool = False
     blocking_ob_wall: bool = False
     has_sweep_risk: bool = False
+    vwap: float = 0.0
+    vwap_aligned: bool = False
+    btc_trend_aligned: bool = False
+    rsi_divergence: bool = False
+    target_magnet_present: bool = False
+    is_squeezed: bool = False
     setup_type: str = "STANDARD_SWING"
     breakeven_price: float = 0.0
     eval_trace: Dict[str, Any] = Field(default_factory=dict)

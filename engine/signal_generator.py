@@ -331,6 +331,18 @@ class SignalGeneratorService:
         ob_defensive_shield = any(m.get('role') == 'DEFENSIVE_SHIELD' for m in liquidity_magnets)
         blocking_ob_wall = any(m.get('role') in ['BLOCKING_RESISTANCE', 'BLOCKING_SUPPORT'] for m in liquidity_magnets)
         has_sweep_risk = any(m.get('role') == 'SWEEP_RISK' for m in liquidity_magnets)
+        target_magnet_present = any(m.get('role') in ['TARGET_ACCELERATOR', 'MAGNET', 'ACCELERATOR'] for m in liquidity_magnets)
+
+        vwap_val = float(latest.get('VWAP', 0.0))
+        vwap_aligned = (is_long and entry >= vwap_val) or (is_short and entry <= vwap_val) if vwap_val > 0 else False
+        is_btc = "BTC" in symbol.upper()
+        btc_trend_aligned = True if is_btc else ((is_long and 'Up' in btc_trend) or (is_short and 'Down' in btc_trend))
+        rsi_divergence = any('RSI Divergence' in str(p) for p in signals)
+        bbl = float(latest.get('BBL_20_2.0', 0.0))
+        kcl = float(latest.get('KCLe_20_1.5', latest.get('KCLs_20_1.5', 0.0)))
+        bbu = float(latest.get('BBU_20_2.0', 0.0))
+        kcu = float(latest.get('KCUe_20_1.5', latest.get('KCUs_20_1.5', 0.0)))
+        is_squeezed = (bbl > kcl) and (bbu < kcu) if (kcl > 0 and kcu > 0) else False
 
         # 6. Build and Validate Typed Signal Payload
         return SignalData(
@@ -369,6 +381,7 @@ class SignalGeneratorService:
             funding_rate=fr,
             imbalance_ratio=imbalance,
             regime=regime,
+            phase=phase,
             catalyst_info=regime_data.get('catalyst_info', '') if regime_data else '',
             oi_delta_pct=round(oi_delta_pct, 2),
             oi_direction=oi_direction,
@@ -389,6 +402,12 @@ class SignalGeneratorService:
             macro_4h_conflict=macro_4h_conflict,
             blocking_ob_wall=blocking_ob_wall,
             has_sweep_risk=has_sweep_risk,
+            vwap=vwap_val,
+            vwap_aligned=vwap_aligned,
+            btc_trend_aligned=btc_trend_aligned,
+            rsi_divergence=rsi_divergence,
+            target_magnet_present=target_magnet_present,
+            is_squeezed=is_squeezed,
             setup_type=risk_params.get('setup_type', 'STANDARD_SWING'),
             breakeven_price=risk_params.get('breakeven_price', 0.0)
         ).model_dump()
