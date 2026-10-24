@@ -3,7 +3,7 @@ Strictly typed configuration module using pydantic-settings.
 """
 
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -25,9 +25,12 @@ class Settings(BaseSettings):
     cryptopanic_api_key: str = Field(default="", description="CryptoPanic API Key")
     discord_webhook_url: str = Field(default="", description="Discord Webhook URL")
 
-    symbols: List[str] = Field(default=['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'ZEC/USDT'])
+    symbols: List[str] = Field(default=['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XAU/USDT', 'ZEC/USDT'])
     timeframes: List[str] = Field(default=['5m', '15m', '1h', '4h'])
     exchange: str = Field(default='binance')
+    fallback_exchanges: List[str] = Field(default=['bybit'], description="Ordered fallback exchanges if primary exchange fails")
+    exchange_probe_cooldown_minutes: int = Field(default=15, description="Minutes to wait before probing a previously failed exchange")
+    proxy_url: Optional[str] = Field(default=None, description="Optional HTTP/SOCKS proxy URL for CCXT and network requests")
     poll_interval_minutes: int = Field(default=5)
     
     percentage_move_trigger: float = Field(default=0.5)
@@ -38,7 +41,7 @@ class Settings(BaseSettings):
         'BTC/USDT': [81000.0, 81500.0, 82000.0, 82500.0, 83000.0],
         'ETH/USDT': [2550.0, 2575.0, 2600.0, 2625.0, 2650.0],
         'SOL/USDT': [115.0, 118.0, 120.0, 122.0, 125.0],
-        'PAXG/USDT': [4100.0, 4150.0, 4200.0, 4250.0],
+        'XAU/USDT': [3950.0, 4000.0, 4050.0, 4100.0, 4150.0],
         'ZEC/USDT': [1500.0, 1550.0, 1600.0, 1650.0]
     })
     
@@ -77,9 +80,15 @@ class Settings(BaseSettings):
     trade_ttl_minutes: int = Field(default=1080, description="Default trade expiration window / TTL in minutes (18 hours = 1080m)")
     vip_confidence_threshold: int = Field(default=92, description="Minimum confidence score for VIP tier classification")
     min_dispatch_confidence: int = Field(default=86, description="Minimum confidence score required to dispatch a signal")
+    min_dispatch_confidence_reversal: float = Field(default=80.0, description="Minimum confidence score for high-confluence structural reversals (Key Level + RSI Div)")
     near_miss_min_score: float = Field(default=75.0, description="Minimum confidence score to record near-miss rejected signals in db")
     liquidity_magnet_depth_pct: float = Field(default=0.02, description="Top depth pct of order book to scan for liquidity magnets")
     liquidity_magnet_multiplier: float = Field(default=3.0, description="Volume multiplier threshold for magnet cluster anomaly")
+
+    # Graduated Bias-Flip & Threat Defensive Protocol
+    defensive_threat_min_score: float = Field(default=80.0, description="Minimum score (80.0% - 87.9%) to trigger Threat Defensive Mode (ratchet active opposing trade SL to BE)")
+    bias_flip_min_score: float = Field(default=88.0, description="Minimum score to execute a full bias flip against active opposing trades")
+    bias_flip_min_volume_ratio: float = Field(default=2.0, description="Minimum volume surge ratio required for full bias flip")
 
     # Tiered Leverage & Execution Settings
     vip_max_leverage_btc: float = Field(default=60.0, description="Max leverage for VIP BTC setups")

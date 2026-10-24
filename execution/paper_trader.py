@@ -9,15 +9,23 @@ from typing import Optional, Dict, Any, List
 import pandas as pd
 from core.db import get_db_connection
 from core.config import settings
+from core.events import TradeClosedEvent
+from core.event_bus import EventBus, get_event_bus
 
 logger = logging.getLogger(__name__)
 
 class PaperTradingService:
     """Service to track simulated trading records."""
     
-    def __init__(self, db_path: str = "data/sentinel.db", initial_capital: float = 10000.0) -> None:
+    def __init__(
+        self, 
+        db_path: str = "data/sentinel.db", 
+        initial_capital: float = 10000.0,
+        event_bus: Optional[EventBus] = None
+    ) -> None:
         self.db_path: str = db_path
         self.initial_capital: float = initial_capital
+        self.event_bus: Optional[EventBus] = event_bus if event_bus is not None else get_event_bus()
         
     async def init_db(self) -> None:
         """Schema is managed by JournalManager in sentinel.db."""
@@ -73,6 +81,12 @@ class PaperTradingService:
                         be_trigger = entry - (initial_risk * be_r_ratio)
                         be_sl_price = round(entry * 0.999, 2)
 
+                    already_be = (trailing_sl is not None) and (
+                        (direction.upper() == 'LONG' and float(trailing_sl) >= be_sl_price) or
+                        (direction.upper() == 'SHORT' and float(trailing_sl) <= be_sl_price)
+                    )
+                    already_tp1 = bool(tp1_hit)
+
                     try:
                         trade_time = datetime.fromisoformat(ts_str.replace(' UTC', '+00:00'))
                         if trade_time.tzinfo is None:
@@ -91,6 +105,23 @@ class PaperTradingService:
                             eval_df = df_5m
                     else:
                         eval_df = df_5m
+
+                    # Chronological Replay Guard:
+                    # If candidate candles include the trade entry time (full replay from entry),
+                    # initialize current_sl to initial sl and reset tp1_hit = 0 for this simulation pass.
+                    # This prevents historical candles from prematurely triggering a stop-loss that
+                    # was only ratcheted forward after reaching 1.0R / TP1.
+                    is_full_replay = False
+                    if has_timestamps and not eval_df.empty:
+                        first_candle_time = pd.to_datetime(eval_df.iloc[0]['timestamp'], utc=True)
+                        if (first_candle_time - trade_time).total_seconds() <= 300:
+                            is_full_replay = True
+
+                    if is_full_replay:
+                        current_sl = float(sl)
+                        tp1_hit = 0
+                    else:
+                        current_sl = float(trailing_sl) if (trailing_sl is not None and float(trailing_sl) > 0) else float(sl)
 
                     fee_drag = (TAKER_FEE_RATE * 2 + DEFAULT_SLIPPAGE_PCT) * lev * 100
                     exit_candle = eval_df.iloc[-1]
@@ -155,7 +186,9 @@ class PaperTradingService:
                             elif c_high >= tp1 and not tp1_hit:
                                 tp1_hit = 1
                                 current_sl = max(current_sl, be_sl_price)
-                                logger.info(f"TP1 hit for LONG {symbol}! Moving SL to BE ({be_sl_price}).")
+                                if not already_tp1:
+                                    already_tp1 = True
+                                    logger.info(f"🎯 TP1 Hit for LONG {symbol}! Moving SL to BE ({be_sl_price}).")
                                 if c_high >= tp2:
                                     status, exit_price = 'WIN_TP2', tp2
                                     exit_candle = candle
@@ -166,7 +199,9 @@ class PaperTradingService:
                                 break
                             elif c_high >= be_trigger and current_sl < be_sl_price:
                                 current_sl = be_sl_price
-                                logger.info(f"Auto-Breakeven 1.0R reached for LONG {symbol}! Moving SL to BE ({be_sl_price}).")
+                                if not already_be:
+                                    already_be = True
+                                    logger.info(f"🛡️ Auto-Breakeven 1.0R reached for LONG {symbol}! Moving SL to BE ({be_sl_price}).")
                                 
                         elif direction.upper() == 'SHORT':
                             current_mae = max(0.0, (c_high - entry) / entry * 100)
@@ -198,7 +233,9 @@ class PaperTradingService:
                             elif c_low <= tp1 and not tp1_hit:
                                 tp1_hit = 1
                                 current_sl = min(current_sl, be_sl_price)
-                                logger.info(f"TP1 hit for SHORT {symbol}! Moving SL to BE ({be_sl_price}).")
+                                if not already_tp1:
+                                    already_tp1 = True
+                                    logger.info(f"🎯 TP1 Hit for SHORT {symbol}! Moving SL to BE ({be_sl_price}).")
                                 if c_low <= tp2:
                                     status, exit_price = 'WIN_TP2', tp2
                                     exit_candle = candle
@@ -209,7 +246,9 @@ class PaperTradingService:
                                 break
                             elif c_low <= be_trigger and current_sl > be_sl_price:
                                 current_sl = be_sl_price
-                                logger.info(f"Auto-Breakeven 1.0R reached for SHORT {symbol}! Moving SL to BE ({be_sl_price}).")
+                                if not already_be:
+                                    already_be = True
+                                    logger.info(f"🛡️ Auto-Breakeven 1.0R reached for SHORT {symbol}! Moving SL to BE ({be_sl_price}).")
                                 
                         mae = max(mae, current_mae)
                         mfe = max(mfe, current_mfe)
@@ -249,6 +288,39 @@ class PaperTradingService:
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                         logger.info(f"Paper trade closed: {trade_id} {symbol} -> {status} with Net PnL {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%) (MAE: {mae:.2f}%, MFE: {mfe:.2f}%)")
 
+                        # Emit TradeClosedEvent to Event Bus (Phase 2 Decoupled Architecture)
+                        if self.event_bus:
+                            exit_candle_dict = None
+                            if exit_candle is not None:
+                                try:
+                                    exit_candle_dict = {
+                                        'open': float(exit_candle['open']) if 'open' in exit_candle else float(exit_candle['close']),
+                                        'high': float(exit_candle['high']),
+                                        'low': float(exit_candle['low']),
+                                        'close': float(exit_candle['close']),
+                                        'volume': float(exit_candle['volume']) if 'volume' in exit_candle else 0.0
+                                    }
+                                except Exception:
+                                    exit_candle_dict = None
+
+                            closed_event = TradeClosedEvent(
+                                trade_id=str(trade_id),
+                                symbol=symbol,
+                                direction=direction,
+                                exit_price=exit_price,
+                                pnl_pct=net_pnl_pct,
+                                outcome=status,
+                                exit_reason=status,
+                                entry_price=entry,
+                                leverage=lev,
+                                gross_pnl_pct=gross_pnl_pct,
+                                net_pnl_pct=net_pnl_pct,
+                                mae_pct=mae,
+                                mfe_pct=mfe,
+                                exit_candle=exit_candle_dict
+                            )
+                            await self.event_bus.publish(closed_event)
+
                         # Evict closed trade from active_signals state immediately so it no longer blocks future setups
                         if state_manager and hasattr(state_manager, 'state') and isinstance(state_manager.state.get("active_signals"), dict):
                             active_sigs = state_manager.state["active_signals"]
@@ -286,7 +358,7 @@ class PaperTradingService:
                                 logger.error(f"Failed to initiate autopsy task for {trade_id}: {e}")
                         
                     else:
-                        await conn.execute('UPDATE trades SET tp1_hit = ?, sl_price = ?, trailing_sl = ? WHERE trade_id = ?', (tp1_hit, current_sl, current_sl, trade_id))
+                        await conn.execute('UPDATE trades SET tp1_hit = ?, trailing_sl = ? WHERE trade_id = ?', (tp1_hit, current_sl, trade_id))
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                 await conn.commit()
         except Exception as e:
@@ -362,8 +434,9 @@ class PaperTradingService:
     async def move_sl_to_be(self, trade_id: str, entry_price: float):
         try:
             async with get_db_connection(self.db_path) as conn:
-                await conn.execute('UPDATE trades SET sl_price = ? WHERE trade_id = ?', (entry_price, trade_id))
+                await conn.execute('UPDATE trades SET sl_price = ?, trailing_sl = ? WHERE trade_id = ?', (entry_price, entry_price, trade_id))
                 await conn.commit()
+                logger.info(f"Stop loss ratcheted to Breakeven (${entry_price}) for trade {trade_id}")
         except Exception as e:
             logger.error(f"Failed to move SL to BE for trade {trade_id}: {e}")
 
@@ -410,6 +483,22 @@ class PaperTradingService:
                     await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (reason, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
                     await conn.commit()
                     logger.info(f"Position {trade_id} forcefully closed at {exit_price} ({reason}). Net PnL: {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%)")
+
+                    if self.event_bus:
+                        closed_event = TradeClosedEvent(
+                            trade_id=trade_id,
+                            symbol=trade_id.split('_')[0] if '_' in trade_id else "UNKNOWN",
+                            direction=direction,
+                            exit_price=exit_price,
+                            pnl_pct=net_pnl_pct,
+                            outcome=reason,
+                            exit_reason=reason,
+                            entry_price=entry,
+                            leverage=lev,
+                            gross_pnl_pct=gross_pnl_pct,
+                            net_pnl_pct=net_pnl_pct
+                        )
+                        await self.event_bus.publish(closed_event)
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
 

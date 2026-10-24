@@ -61,3 +61,7 @@ class NewsAggregatorService:
                 self.seen_guids.add(article['guid'])
             
         return new_articles
+
+    async def fetch_all_news(self, limit: int = 5) -> List[Dict[str, str]]:
+        """Alias for get_latest_news for compatibility."""
+        return await self.get_latest_news(limit=limit)

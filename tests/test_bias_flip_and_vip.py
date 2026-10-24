@@ -136,10 +136,13 @@ def test_paper_trader_invalidation_by_reversal(tmp_path):
     asyncio.run(run_test())
 
 
-def test_bias_flip_confidence_hierarchy_in_main(isolated_state_manager, tmp_path):
+def test_graduated_bias_flip_protocol_in_main(isolated_state_manager, tmp_path):
     """
-    Verify that an incoming opposing signal cannot flip an active higher-confidence signal.
-    Specifically: Active 100% SHORT cannot be flipped by a 90% LONG on equal timeframe.
+    Verify the 3-Tier Graduated Bias-Flip Protocol:
+    1. Weak noise (< 80%): Ignored completely, active trade runs untouched.
+    2. Threat Defensive Mode (80% - 87.9%): Does NOT flip/whipsaw into opposite trade,
+       but ratchets active opposing trade's SL to Breakeven (+0.1% buffer).
+    3. Confirmed Bias Flip (>= 88%): Force closes active opposing position and dispatches new direction.
     """
     import json
     import pandas as pd
@@ -152,10 +155,14 @@ def test_bias_flip_confidence_hierarchy_in_main(isolated_state_manager, tmp_path
             app.market_data = MagicMock()
             app.notifier = MagicMock()
             app.notifier.notify_signal = AsyncMock()
+            app.notifier.notify_defensive_shift = AsyncMock()
             app.notifier.notify_dynamic_level = AsyncMock()
             app.paper_trader = MagicMock()
             app.paper_trader.update_trades = AsyncMock()
-            app.paper_trader.get_open_positions = AsyncMock(return_value=[])
+            app.paper_trader.move_sl_to_be = AsyncMock()
+            app.paper_trader.get_open_positions = AsyncMock(return_value=[
+                {'id': 'TRADE_1', 'direction': 'SHORT', 'entry': 1300.0, 'stop_loss': 1330.0, 'confidence_score': 100.0}
+            ])
             app.paper_trader.close_position = AsyncMock()
             app.paper_trader.get_current_drawdown = AsyncMock(return_value=0.0)
             app.signal_generator = MagicMock()
@@ -166,6 +173,7 @@ def test_bias_flip_confidence_hierarchy_in_main(isolated_state_manager, tmp_path
             app.journal_manager.check_pattern_drift = AsyncMock(return_value="NORMAL")
             app.journal_manager.log_trade = AsyncMock(return_value="TRADE_123")
             app.journal_manager.log_evaluation = AsyncMock()
+            app.journal_manager.log_rejected_signal = AsyncMock()
             app.portfolio_manager = MagicMock()
             app.portfolio_manager.check_emergency_guard = AsyncMock()
             app.regime_detector = MagicMock()
@@ -178,10 +186,13 @@ def test_bias_flip_confidence_hierarchy_in_main(isolated_state_manager, tmp_path
             # Set an active 100% SHORT signal
             isolated_state_manager.state["active_signals"] = {
                 f"{symbol}_{tf}": {
+                    "trade_id": "TRADE_1",
                     "direction": "SHORT",
                     "confidence": 100,
                     "timestamp": now.isoformat(),
                     "timeframe": tf,
+                    "entry": 1300.0,
+                    "stop_loss": 1330.0,
                     "ttl_mins": 1080
                 }
             }
@@ -210,37 +221,47 @@ def test_bias_flip_confidence_hierarchy_in_main(isolated_state_manager, tmp_path
                 'regime': 'NORMAL'
             })
 
-            # AI evaluates opposing LONG with 90% confidence (< 100%)
+            # Case 1: Tier 2 Threat Defensive Mode (84% confidence opposing LONG)
+            # Must NOT flip to LONG, but MUST ratchet active SHORT to Breakeven
             app.ai_evaluator.evaluate_signal = AsyncMock(return_value=json.dumps({
                 'trade_direction': 'LONG',
-                'final_confidence_rating': 90,
+                'final_confidence_rating': 84,
                 'overall_verdict': 'CONFIRMED'
             }))
 
             with patch.object(settings, "timeframes", ["15m"]):
-                # Process symbol with 90% opposing signal
                 await app._process_symbol(symbol, [], False, "Bullish")
 
-                # Result: 90% LONG must NOT invalidate the 100% SHORT
+                # Verify: Active signal remains SHORT, new trade is NOT dispatched
                 assert f"{symbol}_{tf}" in isolated_state_manager.state["active_signals"]
                 assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["direction"] == "SHORT"
-                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 100
                 app.notifier.notify_signal.assert_not_awaited()
                 app.paper_trader.close_position.assert_not_awaited()
 
-                # Now test when AI evaluates opposing LONG with 100% confidence (>= 100%)
+                # Verify: Active trade SL ratcheted to Breakeven (1300 * 0.999 = 1298.7)
+                app.paper_trader.move_sl_to_be.assert_awaited_once_with('TRADE_1', 1298.7)
+                app.notifier.notify_defensive_shift.assert_awaited_once()
+
+                # Case 2: Tier 3 Confirmed Bias Flip (89% confidence opposing LONG)
+                # Clears the >= 88% institutional threshold -> Flips bias, closes SHORT, dispatches LONG!
                 app.ai_evaluator.evaluate_signal = AsyncMock(return_value=json.dumps({
                     'trade_direction': 'LONG',
-                    'final_confidence_rating': 100,
+                    'final_confidence_rating': 89,
                     'overall_verdict': 'CONFIRMED'
                 }))
 
                 await app._process_symbol(symbol, [], False, "Bullish")
 
-                # Result: 100% LONG IS accepted and flips the bias!
+                # Verify: Opposing SHORT position forcefully closed
+                app.paper_trader.close_position.assert_awaited_once_with(
+                    trade_id='TRADE_1',
+                    exit_price=1290.0,
+                    reason="INVALIDATED_BY_REVERSAL"
+                )
+                # Verify: Fresh LONG signal is accepted and dispatched!
                 assert f"{symbol}_{tf}" in isolated_state_manager.state["active_signals"]
                 assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["direction"] == "LONG"
-                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 100
+                assert isolated_state_manager.state["active_signals"][f"{symbol}_{tf}"]["confidence"] == 89
                 app.notifier.notify_signal.assert_awaited_once()
 
     asyncio.run(run_test())

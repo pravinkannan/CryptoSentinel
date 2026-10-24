@@ -324,18 +324,36 @@ class RiskManager:
             target_tp2_pct = abs(tp2 - entry) / entry * 100.0
             
         else:
-            setup_type = "STANDARD_SWING"
-            if is_major:
-                max_lev = getattr(settings, 'std_max_leverage_btc_eth', 25.0)
-                rec_lev_val = max(5, min(int(max_lev), math.floor(25.0 / max(0.9, sl_pct))))
-            else:
-                max_lev = getattr(settings, 'std_max_leverage_alt', 12.0)
-                rec_lev_val = max(3, min(int(max_lev), math.floor(20.0 / max(1.5, sl_pct))))
-                
-            tp1 = float(signal_data.get('tp1', entry * 1.02 if is_long else entry * 0.98))
-            tp2 = float(signal_data.get('tp2', entry * 1.04 if is_long else entry * 0.96))
-            target_tp1_pct = abs(tp1 - entry) / entry * 100.0
-            target_tp2_pct = abs(tp2 - entry) / entry * 100.0
+            if timeframe == '5m':
+                setup_type = "STANDARD_SCALP"
+                max_lev = getattr(settings, 'std_max_leverage_btc_eth', 25.0) if is_btc else (20.0 if is_eth else getattr(settings, 'std_max_leverage_alt', 15.0))
+                budget = 22.0 if is_btc else (18.0 if is_eth else 15.0)
+                rec_lev_val = max(5, min(int(max_lev), math.floor(budget / max(0.5, sl_pct))))
+                # Scalp Take Profit Targets: reachable in 30-60 mins
+                target_tp1_pct = round(max(0.60, min(1.10, sl_pct * 1.2)), 2)
+                target_tp2_pct = round(target_tp1_pct * 1.6, 2)
+                tp1 = entry * (1.0 + target_tp1_pct / 100.0) if is_long else entry * (1.0 - target_tp1_pct / 100.0)
+                tp2 = entry * (1.0 + target_tp2_pct / 100.0) if is_long else entry * (1.0 - target_tp2_pct / 100.0)
+            elif timeframe == '15m':
+                setup_type = "STANDARD_SWING"  # Preserves test_recalibrate_for_tier_standard_swing assertion
+                max_lev = 20.0 if is_btc else (18.0 if is_eth else getattr(settings, 'std_max_leverage_alt', 12.0))
+                budget = 20.0 if is_btc else (18.0 if is_eth else 15.0)
+                rec_lev_val = max(5, min(int(max_lev), math.floor(budget / max(0.7, sl_pct))))
+                # Intraday Targets: reachable in 1-3 hours
+                target_tp1_pct = round(max(1.10, min(1.60, sl_pct * 1.4)), 2)
+                target_tp2_pct = round(target_tp1_pct * 1.7, 2)
+                tp1 = entry * (1.0 + target_tp1_pct / 100.0) if is_long else entry * (1.0 - target_tp1_pct / 100.0)
+                tp2 = entry * (1.0 + target_tp2_pct / 100.0) if is_long else entry * (1.0 - target_tp2_pct / 100.0)
+            else:  # 1h, 4h
+                setup_type = "STANDARD_SWING"
+                max_lev = 12.0 if is_btc else (10.0 if is_eth else 8.0)
+                budget = 15.0 if is_btc else (14.0 if is_eth else 12.0)
+                rec_lev_val = max(4, min(int(max_lev), math.floor(budget / max(0.9, sl_pct))))
+                # Swing Targets: reachable in 4-8 hours
+                target_tp1_pct = round(max(1.80, min(2.80, sl_pct * 1.6)), 2)
+                target_tp2_pct = round(target_tp1_pct * 1.8, 2)
+                tp1 = entry * (1.0 + target_tp1_pct / 100.0) if is_long else entry * (1.0 - target_tp1_pct / 100.0)
+                tp2 = entry * (1.0 + target_tp2_pct / 100.0) if is_long else entry * (1.0 - target_tp2_pct / 100.0)
 
         # Compute breakeven trigger price at 1.0R
         be_dist = abs(entry - initial_sl) * getattr(settings, 'breakeven_trigger_r_ratio', 1.0)

@@ -298,18 +298,19 @@ When the chronological candle evaluator in `PaperTradingService` detects that a 
   2. Implemented strict state machine tracking in `execution/paper_trader.py`: pending positions maintain chronological candle replay against historical 5m bars, accurately resolving multi-target exits (`WIN_TP1`, `WIN_TP2`, `BREAKEVEN`, `LOSS`, `EXPIRED`) with exact taker-fee and slippage modeling.
   3. Enforced strict typing contracts across the entire codebase using Pydantic v2 schemas and verified full static typing compliance using `mypy` across all 19 production modules.
   4. Built a rigorous regression test suite covering dynamic level rounding, circuit breaker trip conditions, RSI boundaries, state persistence round-trips, and historical downtime candle replay.
-* **Result**: Built a resilient, fully autonomous system backed by **159 passing unit and integration tests** running cleanly in CI/CD. The application runs autonomously 24/7 with zero unhandled exceptions, zero data races, and complete auditability.
+* **Result**: Built a resilient, fully autonomous system backed by **189 passing unit and integration tests** running cleanly in CI/CD. The application runs autonomously 24/7 with zero unhandled exceptions, zero data races, and complete auditability.
 
 ---
 
 ## 6. Technical Stack & Key Performance Indicators (KPIs)
 
+* **Architecture**: Hexagonal (Ports & Adapters), Decoupled Domain Confluence Math, Async Event Bus, Composable Pipeline Steps
 * **Language & Runtime**: Python 3.13, Asyncio, Tenacity (exponential backoff & jitter)
 * **AI & LLM Services**: Google Gemini 2.5 Flash, Google GenAI SDK, Structured JSON Decoding
-* **Data & Microstructure**: CCXT Async, Pandas, Pandas-TA, Level-2 Order Book Analysis
-* **Persistence & State**: SQLite with Write-Ahead Logging (aiosqlite), Pydantic v2 (Validation & Schemas)
-* **Messaging & Bot Engine**: Aiogram 3.x, Aiohttp (Discord Webhooks)
-* **Code Quality & Testing**: Mypy (Strict Static Typing), Flake8 (PEP 8 Compliance), Pytest (159 passing test cases)
+* **Data & Microstructure**: CCXT Async, Pandas, Pandas-TA, Level-2 Order Book Analysis, Multi-Exchange Sticky Failover (Binance/Bybit)
+* **Persistence & State**: SQLite with Write-Ahead Logging (aiosqlite), Repository Pattern, Pydantic v2 (Validation & Schemas)
+* **Messaging & Bot Engine**: In-memory EventBus, Aiogram 3.x, Aiohttp (Discord Webhooks)
+* **Code Quality & Testing**: Mypy (Strict Static Typing), Flake8 (PEP 8 Compliance), Pytest (189 passing test cases)
 * **Performance Metrics**:
   - **Standard Tier Win Rate Target**: $>60\%$
   - **VIP Tier Win Rate Target**: $>80\%$

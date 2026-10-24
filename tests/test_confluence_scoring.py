@@ -73,7 +73,7 @@ def test_htf_trend_calculation_ema200_and_fallback():
 # ==============================================================================
 
 def test_stage_1_macro_4h_conflict_direct_flag():
-    """Circuit Breaker 1: Explicit macro_4h_conflict=True halts evaluation."""
+    """Circuit Breaker 1: Explicit macro_4h_conflict=True trips circuit breaker but preserves technical score (Ghost Scoring)."""
     sig = {
         'direction': 'LONG',
         'macro_4h_conflict': True,
@@ -83,13 +83,14 @@ def test_stage_1_macro_4h_conflict_direct_flag():
     }
     result = evaluate_confluence_score("BTC/USDT", sig)
     assert result["tier"] == "REJECTED"
-    assert result["final_score"] == 0.0
+    assert result["circuit_breaker_tripped"] is True
+    assert result["final_score"] > 0.0  # Ghost scoring calculates true technical score
     assert result["eval_trace"]["stage1_passed"] is False
     assert result["eval_trace"]["circuit_breaker"] == "4H Macro Conflict"
 
 
 def test_stage_1_macro_4h_conflict_inferred_from_htf():
-    """Circuit Breaker 1: Inferred 4H macro conflict for Long and Short."""
+    """Circuit Breaker 1: Inferred 4H macro conflict for Long and Short (Ghost Scoring)."""
     # Long against Macro Downtrend
     sig_long = {
         'direction': 'LONG',
@@ -100,7 +101,8 @@ def test_stage_1_macro_4h_conflict_inferred_from_htf():
     }
     res_l = evaluate_confluence_score("BTC/USDT", sig_long)
     assert res_l["tier"] == "REJECTED"
-    assert res_l["final_score"] == 0.0
+    assert res_l["circuit_breaker_tripped"] is True
+    assert res_l["final_score"] > 0.0
     assert res_l["eval_trace"]["stage1_passed"] is False
 
     # Short against Macro Uptrend
@@ -113,12 +115,13 @@ def test_stage_1_macro_4h_conflict_inferred_from_htf():
     }
     res_s = evaluate_confluence_score("BTC/USDT", sig_short)
     assert res_s["tier"] == "REJECTED"
-    assert res_s["final_score"] == 0.0
+    assert res_s["circuit_breaker_tripped"] is True
+    assert res_s["final_score"] > 0.0
     assert res_s["eval_trace"]["stage1_passed"] is False
 
 
 def test_stage_1_rsi_exhaustion_circuit_breaker():
-    """Circuit Breaker 2: RSI > 75 for Long, RSI < 25 for Short."""
+    """Circuit Breaker 2: RSI > 75 for Long, RSI < 25 for Short (Ghost Scoring)."""
     # Long with RSI 76.0 (exhausted)
     sig_long_ex = {
         'direction': 'LONG',
@@ -129,7 +132,8 @@ def test_stage_1_rsi_exhaustion_circuit_breaker():
     }
     res_l = evaluate_confluence_score("BTC/USDT", sig_long_ex)
     assert res_l["tier"] == "REJECTED"
-    assert res_l["final_score"] == 0.0
+    assert res_l["circuit_breaker_tripped"] is True
+    assert res_l["final_score"] > 0.0
     assert "RSI Exhaustion" in res_l["eval_trace"]["circuit_breaker"]
 
     # Long with RSI 74.5 (not exhausted -> passes Stage 1)
@@ -154,12 +158,13 @@ def test_stage_1_rsi_exhaustion_circuit_breaker():
     }
     res_s = evaluate_confluence_score("ETH/USDT", sig_short_ex)
     assert res_s["tier"] == "REJECTED"
-    assert res_s["final_score"] == 0.0
+    assert res_s["circuit_breaker_tripped"] is True
+    assert res_s["final_score"] > 0.0
     assert "RSI Exhaustion" in res_s["eval_trace"]["circuit_breaker"]
 
 
 def test_stage_1_anemic_volume_trap_circuit_breaker():
-    """Circuit Breaker 3: Volume < 0.55 * SMA AND key_level_rejection == False."""
+    """Circuit Breaker 3: Volume < 0.55 * SMA AND key_level_rejection == False (Ghost Scoring)."""
     # Anemic volume without key level rejection -> Circuit Breaker trips
     sig_trap = {
         'direction': 'LONG',
@@ -169,9 +174,10 @@ def test_stage_1_anemic_volume_trap_circuit_breaker():
     }
     res_trap = evaluate_confluence_score("SOL/USDT", sig_trap)
     assert res_trap["tier"] == "REJECTED"
-    assert res_trap["final_score"] == 0.0
+    assert res_trap["circuit_breaker_tripped"] is True
+    assert res_trap["final_score"] > 0.0
     assert res_trap["eval_trace"]["stage1_passed"] is False
-    assert res_trap["eval_trace"]["circuit_breaker"] == "Anemic Volume Trap"
+    assert "Anemic Volume Trap" in res_trap["eval_trace"]["circuit_breaker"]
 
     # Anemic volume BUT key_level_rejection == True -> Passes Stage 1
     sig_saved = {
@@ -513,12 +519,12 @@ def test_stage_3_vip_gate_qualification_continuous_score():
         'funding_rate_tailwind': True, # +1.0
         'patterns': ['Bullish RSI Divergence'] # +3.5
     }
-    # Net: 64.0 + 8.0 + 5.0 + 4.0 + 4.5 + 6.5 + 3.5 = 95.5
+    # Net: 64.0 + 8.0 + 5.0 + 4.0 + 4.5 + 6.5 + 5.0 (RSI Div) = 97.0
     res = evaluate_confluence_score("ETH/USDT", sig_vip)
     assert res["final_score"] >= 92.0
     assert res["tier"] == "VIP"
     assert res["eval_trace"]["vip_capped"] is False
-    assert res["final_score"] == 95.5
+    assert res["final_score"] == 97.0
 
 
 def test_stage_3_vip_gate_capping_missing_volume():
@@ -571,11 +577,11 @@ def test_stage_3_vip_gate_capping_missing_level_rejection():
         'patterns': ['Bullish RSI Divergence'], # +3.5
         'target_magnet_present': True  # +2.0
     }
-    # Net: 64.0 + 8.0 + 0.0 + 4.0 + 4.5 + 6.5 + 5.5 = 92.5
+    # Net: 64.0 + 8.0 + 0.0 + 4.0 + 4.5 + 6.5 + 7.0 = 94.0
     res = evaluate_confluence_score("ETH/USDT", sig_no_level)
     assert res["eval_trace"]["vol_points"] == 8.0
     assert res["eval_trace"]["level_points"] == 0.0
-    assert res["eval_trace"]["net_score"] == 92.5
+    assert res["eval_trace"]["net_score"] == 94.0
     assert res["final_score"] == 91.9  # Capped at 91.9!
     assert res["tier"] == "STANDARD"
     assert res["eval_trace"]["vip_capped"] is True
@@ -775,7 +781,7 @@ def test_circuit_breaker_short_circuits_llm_call():
         res = json.loads(res_raw)
         
         assert res["tier"] == "REJECTED"
-        assert res["final_confidence_rating"] == 0.0
+        assert res["final_confidence_rating"] > 0.0
         assert "Circuit breaker tripped" in res["strategy_analysis"]
         # LLM call was never executed!
         evaluator.client.aio.models.generate_content.assert_not_called()
@@ -849,10 +855,12 @@ def test_stage_1_rsi_boundaries_parameterized(direction, rsi_val, expected_rejec
     res = evaluate_confluence_score("BTC/USDT", sig)
     if expected_rejected:
         assert res["tier"] == "REJECTED"
-        assert res["final_score"] == 0.0
+        assert res["circuit_breaker_tripped"] is True
+        assert res["final_score"] > 0.0
         assert res["eval_trace"]["stage1_passed"] is False
     else:
         assert res["eval_trace"]["stage1_passed"] is True
+        assert res["final_score"] > 0.0
 
 
 @pytest.mark.parametrize("vol, sma, key_rejection, expected_passed", [
@@ -1258,6 +1266,185 @@ def test_stage_2_flawless_100_percent_confluence():
     assert res["final_score"] == 100.0
     assert res["tier"] == "VIP"
     assert trace["vip_capped"] is False
+
+
+# ==============================================================================
+# 10. ARCHITECTURAL OVERHAUL: PHASES 1, 2, AND 3
+# ==============================================================================
+
+def test_phase1_ghost_scoring_preserves_score_and_sets_rejected():
+    """Phase 1: Ghost scoring ensures tripped circuit breakers preserve true score, set status REJECTED, and specify fatal flaw."""
+    sig = {
+        'direction': 'LONG',
+        'macro_4h_conflict': True,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,
+        'vwap_aligned': True,
+        'patterns': ['Bullish RSI Divergence']
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig)
+    assert res["status"] == "REJECTED"
+    assert res["tier"] == "REJECTED"
+    assert res["circuit_breaker_tripped"] is True
+    assert "Phase 1 Gate Failed: 4H Macro Conflict" in res["rejection_reason"]
+    # Technical score should be calculated naturally (>= 64.0 base + volume + key level + vwap + rsi div)
+    assert res["final_score"] >= 80.0
+    assert res["eval_trace"]["stage1_passed"] is False
+    assert res["eval_trace"]["fatal_flaw"] == "Phase 1 Gate Failed: 4H Macro Conflict"
+
+
+def test_phase2_action1_5m_15m_counter_trend_volume_bypass():
+    """Phase 2 Action 1: Lower counter-trend volume threshold to 1.5x SMA if reversal pattern or RSI div is present at key level."""
+    # Setup on 5m opposing 4H macro with 1.6x volume (below old 2.5x threshold, but above new 1.5x threshold)
+    sig_reversal = {
+        'direction': 'LONG',
+        'timeframe': '5m',
+        'htf_4h_trend': 'Macro Down',
+        'volume': 1600.0,
+        'vol_sma_20': 1000.0, # 1.6x
+        'key_level_rejection': True,
+        'patterns': ['Bullish Engulfing']
+    }
+    res = evaluate_confluence_score("SOL/USDT", sig_reversal)
+    assert res["circuit_breaker_tripped"] is False
+    assert res["eval_trace"]["stage1_passed"] is True
+
+    # Same setup WITHOUT reversal pattern or RSI divergence should fail (still requires 2.5x)
+    sig_no_reversal = {
+        'direction': 'LONG',
+        'timeframe': '5m',
+        'htf_4h_trend': 'Macro Down',
+        'volume': 1600.0,
+        'vol_sma_20': 1000.0, # 1.6x
+        'key_level_rejection': True,
+        'patterns': ['Marubozu'] # Continuation, not reversal
+    }
+    res_fail = evaluate_confluence_score("SOL/USDT", sig_no_reversal)
+    assert res_fail["circuit_breaker_tripped"] is True
+    assert res_fail["tier"] == "REJECTED"
+
+
+def test_phase2_action2_1h_4h_counter_trend_bypass():
+    """Phase 2 Action 2: 1H/4H counter-trend setups pass Phase 1 IF confirmed RSI divergence at key support/resistance."""
+    # 1H setup opposing 4H macro, but with confirmed RSI divergence at key level
+    sig_1h_bypass = {
+        'direction': 'LONG',
+        'timeframe': '1h',
+        'htf_4h_trend': 'Macro Down',
+        'key_level_rejection': True,
+        'rsi_divergence': True,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig_1h_bypass)
+    assert res["circuit_breaker_tripped"] is False
+    assert res["eval_trace"]["stage1_passed"] is True
+
+    # 1H setup opposing 4H macro WITHOUT RSI divergence should trip the circuit breaker
+    sig_1h_killed = {
+        'direction': 'LONG',
+        'timeframe': '1h',
+        'htf_4h_trend': 'Macro Down',
+        'key_level_rejection': True,
+        'rsi_divergence': False,
+        'volume': 1500.0,
+        'vol_sma_20': 1000.0
+    }
+    res_killed = evaluate_confluence_score("BTC/USDT", sig_1h_killed)
+    assert res_killed["circuit_breaker_tripped"] is True
+    assert res_killed["tier"] == "REJECTED"
+
+
+def test_phase3_action1_dual_regime_dispatch_floor():
+    """Phase 3 Action 1: Reversals dispatch at 80.0%, Continuations dispatch at 86.0%."""
+    # A reversal setup scoring exactly 81.0% should qualify as STANDARD (dispatch floor 80.0%)
+    sig_reversal = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'rsi_divergence': True,
+        'dist_to_key_level_pct': 0.05, # +5.0%
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,          # +5.33%
+        'open': 100.0,
+        'close': 101.0,
+        'vwap_aligned': False,
+        'vwap': 105.0                  # price pulling to VWAP (+2.0% magnet, 0% friction)
+        # Base (64.0) + Level (5.0) + Vol (5.33) + Catalysts (7.0 max) = 81.3% >= 80.0%
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig_reversal)
+    assert res["eval_trace"]["breakdown"]["is_reversal"] is True
+    assert res["final_score"] >= 80.0
+    assert res["tier"] == "STANDARD"
+
+    # A continuation setup with 81.0% should be REJECTED (needs 86.0%)
+    sig_continuation = {
+        'direction': 'LONG',
+        'is_continuation': True,
+        'key_level_rejection': False,  # Not a reversal
+        'rsi_divergence': False,
+        'volume': 2000.0,
+        'vol_sma_20': 1000.0,          # +8.0%
+        'macro_trend_aligned': True,   # +3.0%
+        'vwap_aligned': True,          # +4.0%
+        'open': 100.0,
+        'close': 101.0
+        # Base (64.0) + Vol (8.0) + Trend (3.0) + VWAP (4.0) = 79.0% -> under 86.0%
+    }
+    res_cont = evaluate_confluence_score("ETH/USDT", sig_continuation)
+    assert res_cont["tier"] == "REJECTED"
+
+
+def test_phase3_action2_state_aware_vwap():
+    """Phase 3 Action 2: If setup is a reversal pulling towards VWAP, waive -3.0% friction and award +2.0% Target Magnet Pull."""
+    sig = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'rsi_divergence': True,
+        'open': 95.0,
+        'close': 98.0,
+        'vwap': 105.0, # Close < VWAP, long entry pulling toward VWAP
+        'vwap_aligned': False
+    }
+    res = evaluate_confluence_score("BTC/USDT", sig)
+    trace = res["eval_trace"]
+    # Should NOT have Fighting Session VWAP (-3.0%) penalty
+    assert not any("Fighting Session VWAP" in c for c in res["scoring_checklist"])
+    # Should have Target Magnet Pull
+    assert any("Target Magnet Pull" in c for c in res["scoring_checklist"])
+    assert trace["catalyst_points"] >= 7.0 # 5.0 (RSI Div) + 2.0 (VWAP Magnet) = 7.0 max
+
+
+def test_phase3_action3_exhaustion_absorption_trap():
+    """Phase 3 Action 3: Friction deduction of -5.0% for Continuation + Volume Surge + OB Imbalance with extended RSI (> 70 or < 30)."""
+    sig = {
+        'direction': 'LONG',
+        'is_continuation': True,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0, # Volume Surge
+        'imbalance_ratio': 1.6, # OB Imbalance
+        'rsi_14': 74.0, # Extended RSI (> 70)
+        'key_level_rejection': False
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig)
+    trace = res["eval_trace"]
+    assert trace["breakdown"]["exhaustion_trap"] is True
+    assert any("Exhaustion Absorption Trap" in c for c in res["scoring_checklist"])
+    assert trace["friction"] <= -5.0
+
+
+def test_phase3_action4_rsi_divergence_points():
+    """Phase 3 Action 4: RSI Divergence points elevated to +5.0%."""
+    sig = {
+        'direction': 'LONG',
+        'key_level_rejection': True,
+        'patterns': ['Bullish RSI Divergence']
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig)
+    assert res["eval_trace"]["catalyst_points"] == 5.0
+    assert any("+5.0% Structural RSI Divergence" in c for c in res["scoring_checklist"])
+
 
 
 

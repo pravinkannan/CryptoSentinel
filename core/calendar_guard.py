@@ -26,7 +26,9 @@ class CalendarGuard:
         """Fetches the economic calendar and filters for high-impact USD events."""
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://www.forexfactory.com/"
         }
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
@@ -35,7 +37,7 @@ class CalendarGuard:
                         try:
                             data = await response.json()
                         except Exception as e:
-                            logger.warning(f"Failed to parse JSON from Faireconomy (Rate Limit likely). Falling back to cached schedule. Error: {e}")
+                            logger.warning(f"Failed to parse JSON from Faireconomy. Falling back to cached schedule. Error: {e}")
                             return
                             
                         self.high_impact_events.clear()
@@ -58,24 +60,29 @@ class CalendarGuard:
                                     logger.error(f"Error parsing date {date_str}: {e}")
                         self.last_sync_time = datetime.now(timezone.utc)
                         logger.info(f"Successfully synced economic calendar. Found {len(self.high_impact_events)} high-impact USD events.")
+                    elif response.status == 429:
+                        logger.warning("Faireconomy economic calendar API rate limit (HTTP 429). Retrying on next scheduled cycle.")
                     else:
                         logger.error(f"Failed to fetch economic calendar: HTTP {response.status}")
         except Exception as e:
             logger.error(f"Error syncing economic calendar: {e}")
 
     async def start_sync_task(self) -> None:
-        """Runs daily at 00:01 UTC to sync calendar."""
+        """Runs periodically to sync calendar."""
         while True:
+            if not self.last_sync_time:
+                await self.sync_calendar()
+                if not self.last_sync_time:
+                    # Initial sync failed (e.g. rate limit), wait 30 minutes before retrying
+                    await asyncio.sleep(1800)
+                    continue
+
             now = datetime.now(timezone.utc)
             next_sync = now.replace(hour=0, minute=1, second=0, microsecond=0)
             if now >= next_sync:
                 next_sync += timedelta(days=1)
             
             wait_seconds = (next_sync - now).total_seconds()
-            
-            if not self.last_sync_time:
-                await self.sync_calendar()
-                
             await asyncio.sleep(wait_seconds)
             await self.sync_calendar()
 
@@ -154,3 +161,30 @@ class CalendarGuard:
             self.last_pause_notification = notification_key
             
         return True, notify_str
+
+    def is_circuit_breaker_active(self) -> Any:
+        """Helper checking if calendar blackout is currently active (sync & async compatible)."""
+        is_blackout, _ = self.check_blackout_window()
+        return _AwaitableBool(is_blackout)
+
+
+class _AwaitableBool:
+    """Wrapper that evaluates as a boolean synchronously and is awaitable in coroutines."""
+    def __init__(self, value: bool) -> None:
+        self._value: bool = value
+
+    def __bool__(self) -> bool:
+        return self._value
+
+    def __eq__(self, other: Any) -> bool:
+        return bool(self._value == other)
+
+    def __repr__(self) -> str:
+        return repr(self._value)
+
+    def __await__(self):
+        async def _coro():
+            return self._value
+        return _coro().__await__()
+
+

@@ -4,7 +4,7 @@ and technical indicator computation for institutional trade signal generation.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import pandas_ta  # noqa: F401
 from typing import Dict, List, Optional, Any, Tuple
@@ -38,6 +38,7 @@ class SignalGeneratorService:
             sl_atr_multiplier=sl_atr_multiplier,
             target_rr_ratio=target_rr_ratio
         )
+        self.oi_history: Dict[str, List[Tuple[datetime, float]]] = {}
 
     def get_dynamic_levels(self, current_price: float, symbol: str, df: Optional[pd.DataFrame] = None) -> Dict[str, float]:
         """Dynamically calculate psychological and historical support/resistance levels."""
@@ -128,12 +129,20 @@ class SignalGeneratorService:
         df.ta.bbands(length=20, std=2, append=True)
         df.ta.kc(length=20, scalar=1.5, append=True)
         
-        # VWAP (anchored on timestamp index)
+        # VWAP (anchored on DatetimeIndex with deterministic cumulative fallback)
         try:
             if 'timestamp' in df.columns:
-                df['VWAP'] = df.set_index('timestamp').ta.vwap()
-        except Exception:
-            pass
+                ts = pd.to_datetime(df['timestamp'])
+                vwap_s = df.set_index(ts).ta.vwap()
+                if isinstance(vwap_s, pd.Series) and not vwap_s.empty and pd.notna(vwap_s.iloc[-1]):
+                    df['VWAP'] = vwap_s.values
+            if 'VWAP' not in df.columns or df['VWAP'].isna().all():
+                tp = (df['high'] + df['low'] + df['close']) / 3.0
+                cum_vol = df['volume'].cumsum()
+                if not cum_vol.empty and cum_vol.iloc[-1] > 0:
+                    df['VWAP'] = ((tp * df['volume']).cumsum() / cum_vol).values
+        except Exception as e:
+            logger.debug(f"VWAP calculation exception: {e}")
         
         try:
             df.ta.cdl_pattern(name="all", append=True)
@@ -188,6 +197,31 @@ class SignalGeneratorService:
         elif fr < -0.03: rationale.append(f"Funding rate is extremely negative ({fr:.4f}%), indicating crowded shorts.")
         if imbalance > 1.5: rationale.append(f"OB shows strong buy imbalance ({imbalance:.2f}).")
         elif imbalance < 0.66: rationale.append(f"OB shows strong sell imbalance ({imbalance:.2f}).")
+
+        # Live Open Interest Delta Calculation & History Tracking
+        live_oi = float(microstructure.get('open_interest', 0.0))
+        if live_oi > 0:
+            if not hasattr(self, 'oi_history') or self.oi_history is None:
+                self.oi_history = {}
+            if symbol not in self.oi_history:
+                self.oi_history[symbol] = []
+            
+            now_utc = datetime.now(timezone.utc)
+            self.oi_history[symbol].append((now_utc, live_oi))
+            
+            # Prune older than 60 minutes
+            cutoff = now_utc - timedelta(minutes=60)
+            self.oi_history[symbol] = [(t, val) for t, val in self.oi_history[symbol] if t >= cutoff]
+            
+            # Compute 15m delta if we have history
+            history = self.oi_history[symbol]
+            if len(history) > 1:
+                target_time = now_utc - timedelta(minutes=15)
+                past_t, past_val = min(history[:-1], key=lambda x: abs((x[0] - target_time).total_seconds()))
+                if (now_utc - past_t).total_seconds() >= 60 and past_val > 0:
+                    calculated_delta = ((live_oi - past_val) / past_val) * 100.0
+                    oi_delta_pct = calculated_delta
+                    oi_direction = "Expanding" if oi_delta_pct > 0 else ("Declining" if oi_delta_pct < 0 else "Neutral")
 
         # Scan for anomalous Liquidity Magnets in the order book
         order_book = microstructure.get('order_book', {})
@@ -328,12 +362,28 @@ class SignalGeneratorService:
             (htf_trend.startswith('Macro Up') and htf_4h_trend.startswith('Macro Up') and is_long) or
             (htf_trend.startswith('Macro Down') and htf_4h_trend.startswith('Macro Down') and is_short)
         )
+        # Resolve order book liquidity magnets against finalized stop loss
+        has_sweep_risk = False
         ob_defensive_shield = any(m.get('role') == 'DEFENSIVE_SHIELD' for m in liquidity_magnets)
         blocking_ob_wall = any(m.get('role') in ['BLOCKING_RESISTANCE', 'BLOCKING_SUPPORT'] for m in liquidity_magnets)
-        has_sweep_risk = any(m.get('role') == 'SWEEP_RISK' for m in liquidity_magnets)
         target_magnet_present = any(m.get('role') in ['TARGET_ACCELERATOR', 'MAGNET', 'ACCELERATOR'] for m in liquidity_magnets)
 
-        vwap_val = float(latest.get('VWAP', 0.0))
+        sl = float(risk_params.get('stop_loss', 0.0))
+        for m in liquidity_magnets:
+            role = m.get('role')
+            price = float(m.get('price', 0.0))
+            if role == 'SWEEP_RISK':
+                # If risk_manager placed the stop loss safely behind the sweep pool,
+                # the pool is structurally shielded by the stop loss and serves as a DEFENSIVE_SHIELD.
+                if is_long and sl > 0 and sl <= price * 0.999:
+                    ob_defensive_shield = True
+                elif is_short and sl > 0 and sl >= price * 1.001:
+                    ob_defensive_shield = True
+                else:
+                    has_sweep_risk = True
+
+        raw_vwap = latest.get('VWAP', 0.0)
+        vwap_val = float(raw_vwap) if (pd.notna(raw_vwap) and float(raw_vwap) > 0) else 0.0
         vwap_aligned = (is_long and entry >= vwap_val) or (is_short and entry <= vwap_val) if vwap_val > 0 else False
         is_btc = "BTC" in symbol.upper()
         btc_trend_aligned = True if is_btc else ((is_long and 'Up' in btc_trend) or (is_short and 'Down' in btc_trend))
@@ -347,6 +397,7 @@ class SignalGeneratorService:
         # 6. Build and Validate Typed Signal Payload
         return SignalData(
             timestamp=latest['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC'),
+            symbol=symbol,
             timeframe=timeframe,
             htf_trend=htf_trend,
             htf_4h_trend=htf_4h_trend,

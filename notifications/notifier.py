@@ -313,3 +313,24 @@ class NotificationService:
             f"Current Price: ${price}"
         )
         await self.send_telegram(msg)
+
+    async def notify_defensive_shift(
+        self,
+        symbol: str,
+        active_direction: str,
+        opposing_direction: str,
+        opposing_confidence: float,
+        be_price: float,
+        opposing_pattern: str = ""
+    ) -> None:
+        """Send Telegram alert when Threat Defensive Mode is triggered."""
+        pattern_str = f" [{opposing_pattern}]" if opposing_pattern else ""
+        msg = (
+            f"🛡️ <b>MICROSTRUCTURE SHIFT DETECTED: {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Active Position: <b>{active_direction}</b>\n"
+            f"Counter-Pressure: <b>{opposing_direction}{pattern_str}</b> (Score: <b>{opposing_confidence}%</b>)\n"
+            f"⚡ <b>DEFENSIVE ACTION</b>: Ratcheted Stop Loss to Breakeven @ <b>${be_price}</b>\n"
+            f"💡 <i>Original thesis protected against severe adverse loss while avoiding whipsaw flip.</i>"
+        )
+        await self.send_telegram(msg)

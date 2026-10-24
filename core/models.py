@@ -85,6 +85,7 @@ class SignalData(BaseModel):
     model_config = ConfigDict(extra='ignore')
     
     timestamp: str
+    symbol: str = ""
     timeframe: str
     htf_trend: str
     htf_4h_trend: str = "Unknown"
