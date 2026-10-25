@@ -73,9 +73,9 @@ def test_signal_generator_ttl_18_hours():
     assert "IST" in signal['expiration_time']
 
 
-def test_paper_trader_does_not_expire_under_18_hours():
+def test_paper_trader_does_not_expire_under_18_hours(tmp_path):
     # Trade created 5 hours ago should NOT expire when ttl_mins is 1080 (18 hours)
-    trader = PaperTradingService()
+    trader = PaperTradingService(db_path=str(tmp_path / "test_ttl.db"))
     now = datetime.now(timezone.utc)
     five_hours_ago = now - timedelta(hours=5)
 

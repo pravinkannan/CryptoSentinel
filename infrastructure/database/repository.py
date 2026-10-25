@@ -6,6 +6,7 @@ and async-safe repository interface. Eliminates split-brain persistence.
 """
 
 from abc import ABC, abstractmethod
+import asyncio
 import json
 import logging
 import os
@@ -112,9 +113,13 @@ class SentinelRepository(ITradeRepository):
     ) -> None:
         self.db_path: str = db_path if isinstance(db_path, str) else "data/sentinel.db"
         self.state_manager = state_manager
+        self._schema_ensured: bool = False
+        self._state_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         """Create tables and perform idempotent migrations."""
+        if self._schema_ensured:
+            return
         abs_path = os.path.abspath(self.db_path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         async with get_db_connection(self.db_path) as conn:
@@ -195,6 +200,7 @@ class SentinelRepository(ITradeRepository):
                     updated_at TEXT
                 )
             ''')
+            self._schema_ensured = True
 
     async def save_trade(self, trade_data: Dict[str, Any]) -> str:
         """Persist a newly opened trade and its evaluation, returning trade_id."""
@@ -314,7 +320,7 @@ class SentinelRepository(ITradeRepository):
                 UPDATE trades 
                 SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? 
                 WHERE trade_id = ?
-            ''', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
+            ''', (status, exit_price, gross_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
             await conn.commit()
             logger.info(f"Trade {trade_id} status updated to {status} at {exit_price} in repository.")
 
@@ -336,12 +342,8 @@ class SentinelRepository(ITradeRepository):
         """Save post-trade forensic autopsy metrics."""
         await self.ensure_schema()
         async with get_db_connection(self.db_path) as conn:
-            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('trade_autopsies', 'autopsies')")
-            row = await cursor.fetchone()
-            tbl = row[0] if row else "trade_autopsies"
-
-            await conn.execute(f'''
-                INSERT OR REPLACE INTO {tbl} (
+            await conn.execute('''
+                INSERT OR REPLACE INTO trade_autopsies (
                     trade_id, symbol, direction, failure_category, summary, 
                     key_culprit, actionable_lesson, timestamp, net_pnl_pct
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -404,22 +406,23 @@ class SentinelRepository(ITradeRepository):
 
     async def save_active_signal(self, key: str, signal_data: Dict[str, Any]) -> None:
         """Atomically persist active signal to state manager and SQLite state table."""
-        active_sigs = await self.get_active_signals()
-        active_sigs[key] = signal_data
-        if self.state_manager and hasattr(self.state_manager, 'state'):
-            self.state_manager.state["active_signals"] = active_sigs
-        
-        now_iso = datetime.now(timezone.utc).isoformat()
-        try:
-            async with get_db_connection(self.db_path) as conn:
-                await conn.execute('''
-                    INSERT INTO sentinel_kv_state (key, value, updated_at) 
-                    VALUES ("active_signals", ?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-                ''', (json.dumps(active_sigs), now_iso))
-                await conn.commit()
-        except Exception as e:
-            logger.debug(f"Could not persist active_signals to sentinel_kv_state: {e}")
+        async with self._state_lock:
+            active_sigs = await self.get_active_signals()
+            active_sigs[key] = signal_data
+            if self.state_manager and hasattr(self.state_manager, 'state'):
+                self.state_manager.state["active_signals"] = active_sigs
+            
+            now_iso = datetime.now(timezone.utc).isoformat()
+            try:
+                async with get_db_connection(self.db_path) as conn:
+                    await conn.execute('''
+                        INSERT INTO sentinel_kv_state (key, value, updated_at) 
+                        VALUES ("active_signals", ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    ''', (json.dumps(active_sigs), now_iso))
+                    await conn.commit()
+            except Exception as e:
+                logger.debug(f"Could not persist active_signals to sentinel_kv_state: {e}")
 
     async def evict_active_signal(
         self, 
@@ -429,6 +432,17 @@ class SentinelRepository(ITradeRepository):
         key: Optional[str] = None
     ) -> List[str]:
         """Atomically evict active signals matching criteria upon trade close."""
+        async with self._state_lock:
+            return await self._evict_active_signal_locked(trade_id, symbol, direction, key)
+
+    async def _evict_active_signal_locked(
+        self, 
+        trade_id: Optional[str] = None, 
+        symbol: Optional[str] = None, 
+        direction: Optional[str] = None, 
+        key: Optional[str] = None
+    ) -> List[str]:
+        """Internal eviction logic, must be called under _state_lock."""
         active_sigs = await self.get_active_signals()
         keys_to_remove: List[str] = []
 

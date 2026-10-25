@@ -18,7 +18,6 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: Dict[Type[Any], List[EventHandler]] = {}
-        self._lock = asyncio.Lock()
 
     def subscribe(self, event_type: Type[Any], handler: EventHandler) -> None:
         """Register an async subscriber for a specific event type."""
@@ -64,7 +63,7 @@ class EventBus:
                 )
 
         tasks = [_safe_execute(h) for h in handlers]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks)
 
     def clear(self) -> None:
         """Clear all registered event subscribers (used for tests)."""

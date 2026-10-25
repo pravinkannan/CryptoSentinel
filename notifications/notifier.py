@@ -26,6 +26,7 @@ class NotificationService:
         self.bot: Optional[Bot] = None
         self.dp = Dispatcher()
         self.journal_manager: Any = None
+        self.recon_handler: Optional[Any] = None
         
         self._register_handlers()
         if self.bot_token:
@@ -99,6 +100,50 @@ class NotificationService:
                     f"  Reason: {r.get('rejection_reason')}\n"
                 )
             await message.reply("\n".join(lines), parse_mode="HTML")
+
+        @self.dp.message(Command("recon"))
+        async def recon_command(message: Message):
+            args = message.text.split() if message.text else []
+            if len(args) < 2:
+                await message.reply(
+                    "⚠️ <b>Usage</b>: <code>/recon &lt;TICKER&gt;</code>\n"
+                    "<b>Examples</b>:\n"
+                    "• <code>/recon PEPEUSDT</code>\n"
+                    "• <code>/recon SOL/USDT</code>\n"
+                    "• <code>/recon DOGE</code>",
+                    parse_mode="HTML"
+                )
+                return
+
+            raw_ticker = args[1].strip().upper()
+            if "/" in raw_ticker:
+                symbol = raw_ticker
+            elif raw_ticker.endswith("USDT"):
+                symbol = f"{raw_ticker[:-4]}/USDT"
+            elif raw_ticker.endswith("USDC"):
+                symbol = f"{raw_ticker[:-4]}/USDC"
+            else:
+                symbol = f"{raw_ticker}/USDT"
+
+            if not self.recon_handler:
+                await message.reply("❌ Recon service is not initialized on the application pipeline.", parse_mode="HTML")
+                return
+
+            status_msg = await message.reply(
+                f"🔎 <b>Initiating Ad-Hoc Recon on {symbol}...</b>\n"
+                f"Scanning <b>5m, 15m, 1h, 4h</b> via SignalPipeline...",
+                parse_mode="HTML"
+            )
+
+            try:
+                report = await self.recon_handler(symbol)
+                await status_msg.edit_text(report, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Error executing recon scan for {symbol}: {e}", exc_info=True)
+                await status_msg.edit_text(
+                    f"❌ <b>Recon Failed for {symbol}</b>\n<code>{str(e)}</code>",
+                    parse_mode="HTML"
+                )
 
     async def start_polling(self) -> None:
         """Start the aiogram bot polling loop with automatic reconnection on network drops."""

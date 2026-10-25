@@ -9,11 +9,7 @@ Includes:
 
 from typing import Dict, List, Any
 
-# Optional settings import with safe fallback to defaults
-try:
-    from core.config import settings
-except Exception:
-    settings = None  # type: ignore
+
 
 # ==============================================================================
 # PARAMETRIC CONFLUENCE ENGINE CONFIGURATION CONSTANTS
@@ -438,13 +434,13 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     # STAGE 3: The VIP Gate & Dual-Regime Floor (Tier Classification)
     # --------------------------------------------------------------------------
     vip_capped = False
-    vip_thresh = float(getattr(settings, 'vip_confidence_threshold', STAGE3_VIP_THRESHOLD)) if settings else STAGE3_VIP_THRESHOLD
+    vip_thresh = float(signal_data.get('_override_vip_threshold', STAGE3_VIP_THRESHOLD))
     
     # Dual-Regime Dispatch Floor: Reversals dispatch at 80.0%, Continuations at 86.0%
     if is_reversal:
-        std_thresh = float(getattr(settings, 'min_dispatch_confidence_reversal', STAGE3_REVERSAL_THRESHOLD)) if settings else STAGE3_REVERSAL_THRESHOLD
+        std_thresh = float(signal_data.get('_override_reversal_threshold', STAGE3_REVERSAL_THRESHOLD))
     else:
-        std_thresh = float(getattr(settings, 'min_dispatch_confidence', STAGE3_STANDARD_THRESHOLD)) if settings else STAGE3_STANDARD_THRESHOLD
+        std_thresh = float(signal_data.get('_override_standard_threshold', STAGE3_STANDARD_THRESHOLD))
     
     vip_capped_score = round(vip_thresh - 0.1, 1)
 

@@ -22,6 +22,11 @@ def sentinel_app(isolated_state_manager):
     with patch("main.StateManager", return_value=isolated_state_manager):
         app = CryptoSentinelApp()
         app.state_manager = isolated_state_manager
+        app.repository = MagicMock()
+        app.repository.save_trade = AsyncMock(return_value="TEST_TRADE_ID")
+        app.repository.ensure_schema = AsyncMock()
+        app.repository.evict_active_signal = AsyncMock(return_value=[])
+        app.repository.save_active_signal = AsyncMock()
         app.market_data = MagicMock()
         app.notifier = MagicMock()
         app.notifier.notify_dynamic_level = AsyncMock()

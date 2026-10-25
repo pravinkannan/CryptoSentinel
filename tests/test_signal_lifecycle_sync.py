@@ -165,6 +165,9 @@ def test_main_prunes_closed_signal_and_dispatches_reversal(tmp_path):
         app.state_manager = sm
         app.paper_trader = trader
         app.journal_manager = journal
+        from infrastructure.database.repository import SentinelRepository
+        app.repository = SentinelRepository(db_path=db_file, state_manager=sm)
+        await app.repository.ensure_schema()
         app.market_data = MagicMock()
         app.notifier = MagicMock()
         app.notifier.notify_signal = AsyncMock()

@@ -60,6 +60,8 @@ class MarketDataIngestionStep:
         df_5m = await self.market_data.fetch_ohlcv(symbol, '5m', limit=500)
         if df_5m is None or df_5m.empty:
             logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - 5m market data unavailable.")
+            context.metadata['recon_status'] = 'NO_DATA'
+            context.metadata['recon_reason'] = f'5m market data unavailable for {symbol}'
             return None
 
         latest_timestamp = df_5m['timestamp'].iloc[-1]
@@ -82,9 +84,12 @@ class MarketDataIngestionStep:
         else:
             age = (now_utc - latest_timestamp).total_seconds()
 
-        if age > 330:
+        is_recon = context.metadata.get('is_recon', False)
+        if age > 330 and not is_recon:
             logger.warning(f"[HEARTBEAT ERROR] Stale market data for {symbol}. Candle age: {age:.0f}s. Pausing signal dispatch.")
             logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Stale market data (age: {age:.0f}s > 330s).")
+            context.metadata['recon_status'] = 'STALE_DATA'
+            context.metadata['recon_reason'] = f'Market data stale (age: {age:.0f}s > 330s)'
             return None
 
         context.raw_candles['5m'] = df_5m
@@ -112,7 +117,7 @@ class MarketDataIngestionStep:
 
         # 5. Update pending paper trades for symbol (once per symbol cycle on primary timeframe)
         is_primary_tf = not getattr(settings, 'timeframes', None) or context.timeframe == settings.timeframes[0]
-        if is_primary_tf and context.current_price > 0 and self.paper_trader:
+        if is_primary_tf and context.current_price > 0 and self.paper_trader and not is_recon:
             await self.paper_trader.update_trades(
                 symbol, df_5m, self.journal_manager, self.notifier, self.ai_evaluator, self.market_data, self.state_manager
             )
@@ -148,6 +153,8 @@ class PatternRecognitionStep:
             df = await self.market_data.fetch_ohlcv(context.symbol, tf)
             if df is None or df.empty:
                 logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Candle data unavailable for timeframe.")
+                context.metadata['recon_status'] = 'NO_DATA'
+                context.metadata['recon_reason'] = f'OHLCV data unavailable for {symbol} on {tf}'
                 return None
             context.raw_candles[tf] = df
 
@@ -178,6 +185,8 @@ class PatternRecognitionStep:
 
         if context.circuit_breaker_active:
             logger.info(f"⏸️ [{context.symbol} {tf}] Result: No trade - Circuit breaker active (Drawdown limit).")
+            context.metadata['recon_status'] = 'CIRCUIT_BREAKER'
+            context.metadata['recon_reason'] = 'Drawdown circuit breaker active'
             return None
 
         # Microstructure & order book
@@ -198,6 +207,8 @@ class PatternRecognitionStep:
 
         if not signal_data:
             logger.info(f"⏸️ [{context.symbol} {tf}] Result: No trade - No setup pattern detected.")
+            context.metadata['recon_status'] = 'NO_PATTERN'
+            context.metadata['recon_reason'] = 'No setup pattern detected'
             return None
 
         context.signal_data = signal_data
@@ -269,6 +280,13 @@ class ConfluenceEvaluationStep:
                         reason = ai_data.get('strategy_analysis', 'Rejected by AI / Confluence evaluation')
                         summary_reason = reason.split('. ')[0].strip() if reason else 'Score below threshold'
                         logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Signal rejected (Score: {final_score}%): {summary_reason}")
+                        context.metadata['recon_status'] = 'REJECTED'
+                        context.metadata['recon_score'] = final_score
+                        context.metadata['recon_fatal_flaw'] = ai_data.get('eval_trace', {}).get('fatal_flaw') or (summary_reason if circuit_breaker else None)
+                        context.metadata['recon_reason'] = summary_reason
+                        context.metadata['recon_checklist'] = ai_data.get('scoring_checklist', [])
+                        context.metadata['recon_pattern'] = signal_data.get('patterns', ['Unknown'])[0] if signal_data.get('patterns') else 'Unknown'
+                        context.metadata['recon_direction'] = direction
                         if self.event_bus:
                             await self.event_bus.publish(SignalRejectedEvent(
                                 symbol=symbol,
@@ -306,6 +324,13 @@ class ConfluenceEvaluationStep:
             if circuit_breaker or tier == "REJECTED":
                 reason = confluence_res.get("rejection_reason") or confluence_res.get("fatal_flaw") or "Score below regime threshold"
                 logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Domain confluence rejected (Score: {final_score}%): {reason}")
+                context.metadata['recon_status'] = 'REJECTED'
+                context.metadata['recon_score'] = final_score
+                context.metadata['recon_fatal_flaw'] = confluence_res.get("fatal_flaw")
+                context.metadata['recon_reason'] = reason
+                context.metadata['recon_checklist'] = confluence_res.get("scoring_checklist", [])
+                context.metadata['recon_pattern'] = signal_data.get('patterns', ['Unknown'])[0] if signal_data.get('patterns') else 'Unknown'
+                context.metadata['recon_direction'] = direction
                 if self.event_bus:
                     await self.event_bus.publish(SignalRejectedEvent(
                         symbol=symbol,
@@ -408,6 +433,9 @@ class ConfluenceEvaluationStep:
 
             if final_score < defensive_threat_min:
                 logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Counter-trend noise ({final_score}%) opposes active position.")
+                context.metadata['recon_status'] = 'REJECTED'
+                context.metadata['recon_score'] = final_score
+                context.metadata['recon_reason'] = f'Counter-trend noise ({final_score}%) opposes active position'
                 return None
             elif final_score < bias_flip_min:
                 logger.warning(f"⚠️ Threat Defensive Mode triggered: {symbol} {tf} {direction} ({final_score}%) opposing active position. Ratcheting SL to BE.")
@@ -457,10 +485,15 @@ class ConfluenceEvaluationStep:
                         opposing_to_invalidate.append((opp_k, sig_tf, sig.get('direction', '')))
                 if skip_flip:
                     return None
-        else:
-            if final_score < dispatch_floor:
-                logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Score {final_score:.1f}% below {dispatch_floor:.1f}% dispatch floor.")
-                return None
+
+        # Universal dispatch floor enforcement (applies to all paths including bias flips)
+        if final_score < dispatch_floor:
+            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Score {final_score:.1f}% below {dispatch_floor:.1f}% dispatch floor.")
+            context.metadata['recon_status'] = 'REJECTED'
+            context.metadata['recon_score'] = final_score
+            regime_label = "Reversal (80.0%)" if is_reversal_setup else "Continuation (86.0%)"
+            context.metadata['recon_reason'] = f'Score {final_score:.1f}% below {dispatch_floor:.1f}% floor for {regime_label}'
+            return None
 
         context.metadata['opposing_to_invalidate'] = opposing_to_invalidate
         context.metadata['opposing_db_positions'] = opposing_db_positions
@@ -620,12 +653,37 @@ class ExecutionDispatchStep:
             'breakeven_price': float(signal_data.get('breakeven_price', 0.0))
         }
 
+        is_recon = bool(context.metadata.get('is_recon'))
+        if is_recon:
+            context.metadata['recon_status'] = 'CONFIRMED'
+            context.metadata['recon_data'] = {
+                'symbol': symbol,
+                'timeframe': tf,
+                'direction': direction,
+                'confidence': confidence,
+                'tier': ai_data.get('tier', 'STANDARD'),
+                'regime': signal_data.get('regime', 'NORMAL'),
+                'pattern_name': pattern_name,
+                'entry': float(signal_data['entry']),
+                'stop_loss': float(signal_data['stop_loss']),
+                'tp1': float(signal_data.get('tp1', signal_data.get('take_profit', signal_data['entry']))),
+                'tp2': float(signal_data.get('tp2', signal_data.get('take_profit', signal_data['entry']))),
+                'leverage': float(signal_data.get('leverage_val', 1.0)),
+                'ttl_mins': int(signal_data.get('ttl_mins', getattr(settings, 'trade_ttl_minutes', 180))),
+                'checklist': ai_data.get('scoring_checklist', []),
+                'setup_type': signal_data.get('setup_type', 'STANDARD_SWING')
+            }
+            logger.info(f"🔭 [RECON CONFIRMED] {symbol} {tf} {direction} ({confidence}%) - Logging trade to database...")
+
         if self.repository:
             trade_id = await self.repository.save_trade(trade_dict)
         elif self.journal_manager:
             trade_id = await self.journal_manager.log_trade(trade_dict)
         else:
             trade_id = f"{symbol}_{context.now_utc.strftime('%Y%m%d_%H%M%S')}"
+
+        if is_recon and context.metadata.get('recon_data'):
+            context.metadata['recon_data']['trade_id'] = trade_id
 
         context.trade_id = trade_id
         signal_data['trade_id'] = trade_id
@@ -660,8 +718,8 @@ class ExecutionDispatchStep:
                 signal_payload=signal_data
             ))
 
-        # Telegram / Discord Notification
-        if self.notifier:
+        # Telegram / Discord Notification (Skip generic broadcast for ad-hoc recon, as user receives targeted reply)
+        if self.notifier and not is_recon:
             current_drawdown = 0.0
             if self.paper_trader and hasattr(self.paper_trader, 'get_current_drawdown'):
                 current_drawdown = await self.paper_trader.get_current_drawdown()
