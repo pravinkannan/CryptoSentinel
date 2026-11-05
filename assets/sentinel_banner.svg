@@ -92,7 +92,7 @@
     <circle cx="44" cy="14" r="4" fill="#10b981" opacity="0.8" />
     <text x="65" y="18" fill="#64748b" font-size="10" font-weight="600" class="font-mono">daemon://sentinel-core.log</text>
 
-    <!-- Realistic Daemon Output Logs (Static clean layout: no overlapping CSS transforms) -->
+    <!-- Realistic Daemon Output Logs (Clean static coordinates: zero CSS transform collisions) -->
     <g class="font-mono" font-size="10">
       <!-- Line 1 -->
       <text x="16" y="52">
@@ -110,34 +110,36 @@
         <tspan fill="#00f0ff" font-weight="700">BTC, ETH, SOL, XAU</tspan>
       </text>
 
-      <!-- Line 3 (User requested pattern detection) -->
+      <!-- Line 3 (Easily recognizable pattern) -->
       <text x="16" y="96">
         <tspan fill="#64748b">18:30:12 </tspan>
         <tspan fill="#f59e0b">🎯 [SOL/USDT 5m] </tspan>
-        <tspan fill="#e2e8f0">Pattern: </tspan>
-        <tspan fill="#f87171" font-weight="700">Bearish 20/50 EMA Crossover </tspan>
-        <tspan fill="#94a3b8">(Evaluating confluence...)</tspan>
+        <tspan fill="#e2e8f0">Pattern detected: </tspan>
+        <tspan fill="#f87171" font-weight="700">Double Top Rejection. </tspan>
+        <tspan fill="#94a3b8">Evaluating confluence...</tspan>
       </text>
 
-      <!-- Line 4 (User requested trade dispatched) -->
+      <!-- Line 4 (Result: Trade Dispatched without internal ID, Tier: PREMIUM) -->
       <text x="16" y="118">
         <tspan fill="#64748b">18:30:14 </tspan>
         <tspan fill="#10b981">🚀 [SOL/USDT 5m] </tspan>
         <tspan fill="#e2e8f0">Result: </tspan>
-        <tspan fill="#38bdf8" font-weight="700">Trade Dispatched </tspan>
-        <tspan fill="#94a3b8">- SOL_20261105_121230 </tspan>
-        <tspan fill="#f87171" font-weight="700">SHORT</tspan>
+        <tspan fill="#38bdf8" font-weight="700">Trade Dispatched ➔ </tspan>
+        <tspan fill="#f87171" font-weight="700">SHORT </tspan>
+        <tspan fill="#94a3b8">(Score: 89.0%, Tier: </tspan>
+        <tspan fill="#a78bfa" font-weight="700">PREMIUM</tspan>
+        <tspan fill="#94a3b8">)</tspan>
       </text>
 
-      <!-- Line 5 (Score, Tier, Telegram dispatch) -->
+      <!-- Line 5 (PREMIUM Tier Risk & Telegram Dispatch) -->
       <text x="16" y="140">
         <tspan fill="#64748b">18:30:15</tspan>
-        <tspan fill="#a78bfa" font-weight="700"> [VIP]</tspan>
-        <tspan fill="#94a3b8"> Score: </tspan>
-        <tspan fill="#10b981" font-weight="700">89.0% </tspan>
-        <tspan fill="#94a3b8">| Stop Loss: </tspan>
+        <tspan fill="#a78bfa" font-weight="700"> [PREMIUM]</tspan>
+        <tspan fill="#94a3b8"> Stop Loss: </tspan>
         <tspan fill="#10b981" font-weight="700">Armed </tspan>
-        <tspan fill="#94a3b8">| Broadcast ➔ </tspan>
+        <tspan fill="#94a3b8">| Take Profit: </tspan>
+        <tspan fill="#10b981" font-weight="700">Armed </tspan>
+        <tspan fill="#94a3b8">| Dispatched ➔ </tspan>
         <tspan fill="#38bdf8" font-weight="700">Telegram Channel</tspan>
       </text>
 
@@ -169,39 +171,35 @@
       </path>
     </g>
 
-    <!-- ================= SCANNED ASSET BADGES ================= -->
+    <!-- ================= SCANNED ASSET BADGES (ACTIVELY BLINKING) ================= -->
     <!-- 1. BTC (Top-Right Quadrant) -->
     <g transform="translate(38, -34)">
-      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#181308" stroke="#f59e0b" stroke-width="1.2">
-        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite" />
-      </rect>
+      <animate attributeName="opacity" values="1;0.18;1" dur="1.5s" repeatCount="indefinite" />
+      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#181308" stroke="#f59e0b" stroke-width="1.2" />
       <circle cx="-9" cy="0" r="3" fill="#f59e0b" filter="url(#glow)" />
       <text x="3" y="4" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="800" class="font-mono">BTC</text>
     </g>
 
     <!-- 2. ETH (Top-Left Quadrant) -->
     <g transform="translate(-40, -32)">
-      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#0d1428" stroke="#6366f1" stroke-width="1.2">
-        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="2.4s" repeatCount="indefinite" />
-      </rect>
+      <animate attributeName="opacity" values="1;0.18;1" dur="2.0s" repeatCount="indefinite" />
+      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#0d1428" stroke="#6366f1" stroke-width="1.2" />
       <circle cx="-9" cy="0" r="3" fill="#6366f1" filter="url(#glow)" />
       <text x="3" y="4" text-anchor="middle" fill="#818cf8" font-size="9" font-weight="800" class="font-mono">ETH</text>
     </g>
 
     <!-- 3. SOL (Bottom-Right Quadrant) -->
     <g transform="translate(38, 36)">
-      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#1b0e2b" stroke="#a855f7" stroke-width="1.2">
-        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite" />
-      </rect>
+      <animate attributeName="opacity" values="1;0.18;1" dur="1.3s" repeatCount="indefinite" />
+      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#1b0e2b" stroke="#a855f7" stroke-width="1.2" />
       <circle cx="-9" cy="0" r="3" fill="#a855f7" filter="url(#glow)" />
       <text x="3" y="4" text-anchor="middle" fill="#c084fc" font-size="9" font-weight="800" class="font-mono">SOL</text>
     </g>
 
     <!-- 4. XAU (Gold, Bottom-Left Quadrant) -->
     <g transform="translate(-40, 36)">
-      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#201a06" stroke="#eab308" stroke-width="1.2">
-        <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="2.8s" repeatCount="indefinite" />
-      </rect>
+      <animate attributeName="opacity" values="1;0.18;1" dur="1.8s" repeatCount="indefinite" />
+      <rect x="-18" y="-10" width="36" height="20" rx="10" fill="#201a06" stroke="#eab308" stroke-width="1.2" />
       <circle cx="-9" cy="0" r="3" fill="#eab308" filter="url(#glow)" />
       <text x="3" y="4" text-anchor="middle" fill="#fde047" font-size="9" font-weight="800" class="font-mono">XAU</text>
     </g>
