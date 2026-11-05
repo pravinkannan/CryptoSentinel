@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+from core.config import settings
 from domain.confluence.engine import (
     evaluate_confluence_score,
     STAGE3_VIP_THRESHOLD,
@@ -195,9 +196,12 @@ Provide JSON output adhering exactly to the schema.
             final_score = round(max(0.0, min(100.0, adjusted_score)), 1)
             
             # Tier reassessment post-AI review
-            if final_score >= STAGE3_VIP_THRESHOLD and score_result["tier"] == "VIP":
+            std_thresh = float(signal_data.get('_override_standard_threshold', STAGE3_STANDARD_THRESHOLD))
+            vip_thresh = float(signal_data.get('_override_vip_threshold', STAGE3_VIP_THRESHOLD))
+
+            if final_score >= vip_thresh and score_result.get("tier") == "VIP":
                 tier = "VIP"
-            elif final_score >= STAGE3_STANDARD_THRESHOLD:
+            elif final_score >= std_thresh:
                 tier = "STANDARD"
             else:
                 tier = "REJECTED"

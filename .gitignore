@@ -16,3 +16,5 @@ sentinel_state.json
 .DS_Store
 Thumbs.db
 scratch/
+data/historical/
+data/*.json

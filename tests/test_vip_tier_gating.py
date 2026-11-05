@@ -7,8 +7,8 @@ from notifications.notifier import NotificationService
 
 
 def test_vip_confidence_threshold_configuration():
-    """Verify that settings default VIP confidence threshold is 92.0."""
-    assert settings.vip_confidence_threshold == 92.0
+    """Verify that settings default VIP confidence threshold is 89.0."""
+    assert settings.vip_confidence_threshold == 89.0
 
 
 def test_notification_tier_badges_and_channels():
@@ -45,6 +45,13 @@ def test_notification_tier_badges_and_channels():
         assert "👑 VIP SNIPER (100% ROE)" in sent_sniper
         assert "[👑 VIP SNIPER EXCLUSIVE]" in sent_sniper
 
+        # Case 1c: 90% Confidence -> VIP
+        signal_vip90 = dict(base_signal)
+        ai_vip90 = {'trade_direction': 'Bullish', 'final_confidence_rating': 90, 'strategy_analysis': 'Test 90'}
+        await notifier.notify_signal('BTC/USDT', signal_vip90, ai_vip90, 0.0)
+        sent_vip90 = notifier.send_telegram.call_args[0][0]
+        assert "👑 VIP TIER" in sent_vip90
+
         # Case 2: 88% Confidence -> STANDARD
         signal_std = dict(base_signal)
         ai_std = {'trade_direction': 'Bullish', 'final_confidence_rating': 88, 'strategy_analysis': 'Test'}
@@ -60,5 +67,12 @@ def test_notification_tier_badges_and_channels():
         sent_std2 = notifier.send_telegram.call_args[0][0]
         assert "🔹 STANDARD TIER" in sent_std2
         assert "[📈 STANDARD FEED]" in sent_std2
+
+        # Case 4: 85% Confidence -> STANDARD
+        signal_std85 = dict(base_signal)
+        ai_std85 = {'trade_direction': 'Bullish', 'final_confidence_rating': 85, 'strategy_analysis': 'Test 85'}
+        await notifier.notify_signal('BTC/USDT', signal_std85, ai_std85, 0.0)
+        sent_std85 = notifier.send_telegram.call_args[0][0]
+        assert "🔹 STANDARD TIER" in sent_std85
 
     asyncio.run(run_test())

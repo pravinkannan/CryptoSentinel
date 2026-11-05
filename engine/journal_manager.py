@@ -48,103 +48,14 @@ class AutopsyPayload(TypedDict, total=False):
 class JournalManager:
     """Manages trade lifecycles, historical performance metrics, and post-mortems."""
     
-    def __init__(self, db_path: str = "data/sentinel.db") -> None:
-        self.db_path: str = db_path
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        self.db_path: str = db_path if db_path is not None else getattr(settings, 'db_path', "data/sentinel.db")
 
     async def ensure_db_exists(self) -> None:
-        """Initializes tables and performs idempotent schema migrations."""
-        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        async with get_db_connection(self.db_path) as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS trades (
-                    trade_id TEXT PRIMARY KEY,
-                    timestamp TEXT,
-                    symbol TEXT,
-                    direction TEXT,
-                    entry_price REAL,
-                    sl_price REAL,
-                    tp1_price REAL,
-                    tp2_price REAL,
-                    leverage REAL,
-                    tp1_hit INTEGER DEFAULT 0,
-                    tp2_hit INTEGER DEFAULT 0,
-                    trailing_sl REAL,
-                    status TEXT,
-                    exit_price REAL,
-                    pnl_pct REAL,
-                    net_pnl_pct REAL DEFAULT 0.0,
-                    gross_pnl_pct REAL DEFAULT 0.0
-                )
-            ''')
-            try:
-                await conn.execute('ALTER TABLE trades ADD COLUMN exit_price REAL DEFAULT 0.0')
-            except Exception:
-                pass
-            try:
-                await conn.execute('ALTER TABLE trades ADD COLUMN net_pnl_pct REAL DEFAULT 0.0')
-                await conn.execute('ALTER TABLE trades ADD COLUMN gross_pnl_pct REAL DEFAULT 0.0')
-            except Exception:
-                pass
-            try:
-                await conn.execute(f'ALTER TABLE trades ADD COLUMN ttl_mins INTEGER DEFAULT {settings.trade_ttl_minutes}')
-            except Exception:
-                pass
-            try:
-                await conn.execute('ALTER TABLE trades ADD COLUMN trailing_sl REAL')
-            except Exception:
-                pass
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS evaluations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trade_id TEXT,
-                    signal_payload TEXT,
-                    pattern_name TEXT,
-                    confidence_score REAL,
-                    confluences_applied TEXT,
-                    regime_state TEXT,
-                    mae_pct REAL DEFAULT 0.0,
-                    mfe_pct REAL DEFAULT 0.0,
-                    FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS trade_autopsies (
-                    trade_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    direction TEXT,
-                    failure_category TEXT,
-                    summary TEXT,
-                    key_culprit TEXT,
-                    actionable_lesson TEXT,
-                    timestamp TEXT,
-                    net_pnl_pct REAL DEFAULT 0.0,
-                    FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
-                )
-            ''')
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS rejected_signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    symbol TEXT,
-                    timeframe TEXT,
-                    direction TEXT,
-                    pattern_name TEXT,
-                    confidence_score REAL,
-                    base_score REAL,
-                    vol_points REAL,
-                    level_points REAL,
-                    vwap_points REAL,
-                    ob_points REAL,
-                    trend_tailwinds REAL,
-                    catalyst_points REAL,
-                    friction REAL,
-                    net_score REAL,
-                    scoring_checklist TEXT,
-                    eval_trace_json TEXT,
-                    rejection_reason TEXT
-                )
-            ''')
-            await conn.commit()
+        """Initializes tables and performs schema migrations via unified SentinelRepository."""
+        from infrastructure.database.repository import SentinelRepository
+        repo = SentinelRepository(db_path=self.db_path)
+        await repo.ensure_schema()
 
     async def log_trade(self, trade_data: Dict[str, Any]) -> str:
         """

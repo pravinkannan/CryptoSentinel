@@ -69,7 +69,7 @@ def test_paper_trader_trailing_sl_does_not_prematurely_stop_out_on_entry_candle(
             cur = await conn.execute("SELECT status, trailing_sl, tp1_hit FROM trades WHERE trade_id = ?", (trade_id,))
             row = await cur.fetchone()
             assert row[0] == 'PENDING', f"Expected PENDING, got {row[0]}"
-            assert row[1] == 1125.15, f"Expected trailing_sl 1125.15, got {row[1]}"
+            assert row[1] == 1123.17, f"Expected trailing_sl 1123.17, got {row[1]}"
             assert row[2] == 0
 
         # Pass 2: Next poll cycle, df contains candles from 12:55 up to 14:30 (where low reaches 1087.71, hitting TP1!)

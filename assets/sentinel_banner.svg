@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080c14" />
+      <stop offset="50%" stop-color="#0d131f" />
+      <stop offset="100%" stop-color="#080c14" />
+    </linearGradient>
+
+    <!-- Border Glow Gradient -->
+    <linearGradient id="borderGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#10b981" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.8" />
+    </linearGradient>
+
+    <!-- Radar Sweep Gradient -->
+    <linearGradient id="radarSweep" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#00f0ff" stop-opacity="0.0" />
+    </linearGradient>
+
+    <!-- Terminal Box Gradient -->
+    <linearGradient id="terminalBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#05080f" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#090e18" stop-opacity="0.95" />
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <style>
+      @keyframes pulse {
+        0% { opacity: 0.3; }
+        50% { opacity: 0.9; }
+        100% { opacity: 0.3; }
+      }
+      @keyframes scanline {
+        0% { transform: translateY(-320px); }
+        100% { transform: translateY(320px); }
+      }
+      @keyframes type1 {
+        0%, 15% { opacity: 0; transform: translateY(2px); }
+        20%, 100% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes type2 {
+        0%, 35% { opacity: 0; transform: translateY(2px); }
+        40%, 100% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes type3 {
+        0%, 55% { opacity: 0; transform: translateY(2px); }
+        60%, 100% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes type4 {
+        0%, 75% { opacity: 0; transform: translateY(2px); }
+        80%, 100% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes wave {
+        0% { stroke-dashoffset: 0; }
+        100% { stroke-dashoffset: 200; }
+      }
+      .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .line1 { animation: type1 8s infinite; }
+      .line2 { animation: type2 8s infinite; }
+      .line3 { animation: type3 8s infinite; }
+      .line4 { animation: type4 8s infinite; }
+      .wave-anim { stroke-dasharray: 8 4; animation: wave 6s linear infinite; }
+    </style>
+  </defs>
+
+  <!-- Container Box -->
+  <rect x="2" y="2" width="896" height="316" rx="14" fill="url(#bgGradient)" stroke="url(#borderGlow)" stroke-width="1.5" />
+
+  <!-- Subtle Cyber Grid -->
+  <g opacity="0.08" stroke="#00f0ff" stroke-width="0.75">
+    <line x1="50" y1="0" x2="50" y2="320" />
+    <line x1="150" y1="0" x2="150" y2="320" />
+    <line x1="250" y1="0" x2="250" y2="320" />
+    <line x1="350" y1="0" x2="350" y2="320" />
+    <line x1="450" y1="0" x2="450" y2="320" />
+    <line x1="550" y1="0" x2="550" y2="320" />
+    <line x1="650" y1="0" x2="650" y2="320" />
+    <line x1="750" y1="0" x2="750" y2="320" />
+    <line x1="850" y1="0" x2="850" y2="320" />
+    <line x1="0" y1="50" x2="900" y2="50" />
+    <line x1="0" y1="110" x2="900" y2="110" />
+    <line x1="0" y1="170" x2="900" y2="170" />
+    <line x1="0" y1="230" x2="900" y2="230" />
+    <line x1="0" y1="290" x2="900" y2="290" />
+  </g>
+
+  <!-- ================= LEFT HEADER & TELEMETRY ================= -->
+  <!-- Top Branding -->
+  <g transform="translate(35, 45)">
+    <!-- Security Shield Icon -->
+    <path d="M 0 6 L 14 0 L 28 6 L 28 16 C 28 25 14 32 14 32 C 14 32 0 25 0 16 Z" fill="none" stroke="#00f0ff" stroke-width="2" filter="url(#glow)" />
+    <path d="M 14 8 L 20 14 L 14 24 L 8 14 Z" fill="#10b981" opacity="0.8" />
+    
+    <text x="40" y="16" fill="#f8fafc" font-size="20" font-weight="800" letter-spacing="3" class="font-mono">CRYPTO SENTINEL</text>
+    <text x="40" y="30" fill="#10b981" font-size="10" font-weight="700" letter-spacing="2" class="font-mono">AUTONOMOUS QUANTITATIVE EXECUTION &amp; RISK ENGINE</text>
+  </g>
+
+  <!-- Live Status Badge (Top Right) -->
+  <g transform="translate(670, 42)">
+    <rect x="0" y="0" width="195" height="26" rx="13" fill="#0b1322" stroke="#10b981" stroke-width="1.2" />
+    <circle cx="16" cy="13" r="4.5" fill="#10b981" filter="url(#glow)">
+      <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite" />
+    </circle>
+    <text x="28" y="17" fill="#10b981" font-size="10" font-weight="800" letter-spacing="1" class="font-mono">79.2% WIN RATE // VERIFIED</text>
+  </g>
+
+  <!-- Live Terminal Simulator Window -->
+  <g transform="translate(35, 95)">
+    <!-- Window Frame -->
+    <rect x="0" y="0" width="530" height="195" rx="10" fill="url(#terminalBg)" stroke="#1e293b" stroke-width="1.2" />
+    
+    <!-- Top Bar -->
+    <rect x="0" y="0" width="530" height="28" rx="10" fill="#0d1424" />
+    <circle cx="16" cy="14" r="4" fill="#ef4444" opacity="0.8" />
+    <circle cx="30" cy="14" r="4" fill="#f59e0b" opacity="0.8" />
+    <circle cx="44" cy="14" r="4" fill="#10b981" opacity="0.8" />
+    <text x="65" y="18" fill="#64748b" font-size="10" font-weight="600" class="font-mono">daemon://sentinel-core.production</text>
+
+    <!-- Animated CLI Telemetry Lines -->
+    <g transform="translate(18, 50)" class="font-mono" font-size="11">
+      <!-- Line 1 -->
+      <g class="line1">
+        <text x="0" y="0" fill="#38bdf8" font-weight="700">❯</text>
+        <text x="16" y="0" fill="#94a3b8">Market Data Ingestion:</text>
+        <text x="180" y="0" fill="#10b981" font-weight="600">[BYBIT / BINANCE POOL CONNECTED]</text>
+      </g>
+      
+      <!-- Line 2 -->
+      <g class="line2" transform="translate(0, 28)">
+        <text x="0" y="0" fill="#38bdf8" font-weight="700">❯</text>
+        <text x="16" y="0" fill="#94a3b8">Confluence Engine:</text>
+        <text x="180" y="0" fill="#00f0ff" font-weight="600">[DETERMINISTIC GATING ACTIVE]</text>
+      </g>
+
+      <!-- Line 3 -->
+      <g class="line3" transform="translate(0, 56)">
+        <text x="0" y="0" fill="#38bdf8" font-weight="700">❯</text>
+        <text x="16" y="0" fill="#94a3b8">Portfolio Armor:</text>
+        <text x="180" y="0" fill="#a78bfa" font-weight="600">[0.00% DRAWDOWN // CIRCUIT BREAKER OK]</text>
+      </g>
+
+      <!-- Line 4 -->
+      <g class="line4" transform="translate(0, 84)">
+        <text x="0" y="0" fill="#38bdf8" font-weight="700">❯</text>
+        <text x="16" y="0" fill="#94a3b8">Verified Benchmark:</text>
+        <text x="180" y="0" fill="#10b981" font-weight="700">[79.2% WIN RATE // +1,553.26% PnL]</text>
+      </g>
+
+      <!-- Line 5 (Cyber Win Rate Gauge) -->
+      <g class="line4" transform="translate(0, 114)">
+        <text x="0" y="0" fill="#10b981" font-weight="700">❯</text>
+        <text x="16" y="0" fill="#94a3b8">Win Rate Accuracy:</text>
+        <rect x="180" y="-10" width="160" height="12" rx="3" fill="#0d1b2a" stroke="#1e293b" stroke-width="1" />
+        <rect x="180" y="-10" width="126" height="12" rx="3" fill="#10b981" opacity="0.85" filter="url(#glow)" />
+        <text x="352" y="0" fill="#10b981" font-weight="800" font-size="11">79.2% AVG</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ================= RIGHT RADAR & VOLATILITY HUD ================= -->
+  <g transform="translate(735, 192)">
+    <!-- Radar Base Glow -->
+    <circle cx="0" cy="0" r="85" fill="#040711" stroke="#1e293b" stroke-width="1.5" />
+    <circle cx="0" cy="0" r="60" fill="none" stroke="#0f172a" stroke-width="1" stroke-dasharray="4 3" />
+    <circle cx="0" cy="0" r="35" fill="none" stroke="#00f0ff" stroke-width="0.8" opacity="0.3" />
+    <circle cx="0" cy="0" r="10" fill="#10b981" opacity="0.4" />
+
+    <!-- Crosshair axes -->
+    <line x1="-85" y1="0" x2="85" y2="0" stroke="#1e293b" stroke-width="1" />
+    <line x1="0" y1="-85" x2="0" y2="85" stroke="#1e293b" stroke-width="1" />
+
+    <!-- Sweeping Radar Beam (Rotating Animation) -->
+    <g>
+      <path d="M 0 0 L 85 0 A 85 85 0 0 0 0 -85 Z" fill="url(#radarSweep)">
+        <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="4s" repeatCount="indefinite" />
+      </path>
+    </g>
+
+    <!-- Detected Target Blips -->
+    <circle cx="35" cy="-25" r="3" fill="#00f0ff" filter="url(#glow)">
+      <animate attributeName="opacity" values="0.1;1;0.1" dur="2s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="-42" cy="40" r="2.5" fill="#10b981" filter="url(#glow)">
+      <animate attributeName="opacity" values="0.2;0.9;0.2" dur="3s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="-20" cy="-45" r="3.5" fill="#f59e0b" filter="url(#glow)">
+      <animate attributeName="opacity" values="0;1;0" dur="1.5s" repeatCount="indefinite" />
+    </circle>
+
+    <!-- Volatility Squeeze Pulse Waveform -->
+    <path d="M -85 0 Q -42 -25 0 0 T 85 0" fill="none" stroke="#00f0ff" stroke-width="1.5" opacity="0.6" class="wave-anim" />
+
+    <!-- Bottom HUD Caption -->
+    <text x="0" y="105" text-anchor="middle" fill="#64748b" font-size="9" font-weight="700" letter-spacing="1.5" class="font-mono">L2 RADAR // ACTIVE SWEEP</text>
+  </g>
+</svg>
+

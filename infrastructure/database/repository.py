@@ -108,10 +108,11 @@ class SentinelRepository(ITradeRepository):
 
     def __init__(
         self, 
-        db_path: str = "data/sentinel.db", 
+        db_path: Optional[str] = None, 
         state_manager: Any = None
     ) -> None:
-        self.db_path: str = db_path if isinstance(db_path, str) else "data/sentinel.db"
+        default_db = getattr(settings, 'db_path', "data/sentinel.db")
+        self.db_path: str = db_path if (db_path and isinstance(db_path, str)) else default_db
         self.state_manager = state_manager
         self._schema_ensured: bool = False
         self._state_lock = asyncio.Lock()
@@ -200,7 +201,38 @@ class SentinelRepository(ITradeRepository):
                     updated_at TEXT
                 )
             ''')
+            # Idempotent column migrations for schema unification
+            for migration in [
+                'ALTER TABLE trades ADD COLUMN exit_price REAL DEFAULT 0.0',
+                'ALTER TABLE trades ADD COLUMN net_pnl_pct REAL DEFAULT 0.0',
+                'ALTER TABLE trades ADD COLUMN gross_pnl_pct REAL DEFAULT 0.0',
+                'ALTER TABLE trades ADD COLUMN ttl_mins INTEGER DEFAULT 1080',
+                'ALTER TABLE trades ADD COLUMN trailing_sl REAL',
+                'ALTER TABLE trades ADD COLUMN close_time TEXT',
+                'ALTER TABLE evaluations ADD COLUMN confluences_applied TEXT',
+                'ALTER TABLE evaluations ADD COLUMN scoring_checklist TEXT',
+                'ALTER TABLE evaluations ADD COLUMN regime_state TEXT',
+                'ALTER TABLE evaluations ADD COLUMN regime TEXT',
+                'ALTER TABLE rejected_signals ADD COLUMN base_score REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN vol_points REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN level_points REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN vwap_points REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN ob_points REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN trend_tailwinds REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN catalyst_points REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN friction REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN net_score REAL',
+                'ALTER TABLE rejected_signals ADD COLUMN eval_trace_json TEXT',
+            ]:
+                try:
+                    await conn.execute(migration)
+                except Exception:
+                    pass
+            await conn.commit()
             self._schema_ensured = True
+            
+            # Idempotently migrate sentinel_state.json if present
+            await self.migrate_json_state_to_db()
 
     async def save_trade(self, trade_data: Dict[str, Any]) -> str:
         """Persist a newly opened trade and its evaluation, returning trade_id."""
@@ -384,6 +416,62 @@ class SentinelRepository(ITradeRepository):
             await conn.commit()
 
     # --------------------------------------------------------------------------
+    async def migrate_json_state_to_db(self, json_path: str = "sentinel_state.json") -> bool:
+        """Migrate legacy sentinel_state.json into sentinel_kv_state in SQLite."""
+        if not os.path.exists(json_path):
+            return False
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return False
+                
+            now_iso = datetime.now(timezone.utc).isoformat()
+            async with get_db_connection(self.db_path) as conn:
+                for k, v in data.items():
+                    val_str = json.dumps(v) if not isinstance(v, str) else v
+                    await conn.execute('''
+                        INSERT INTO sentinel_kv_state (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    ''', (k, val_str, now_iso))
+                await conn.commit()
+            logger.info(f"Successfully migrated legacy state from {json_path} into SQLite sentinel_kv_state.")
+            return True
+        except Exception as e:
+            logger.warning(f"Error migrating {json_path} into SQLite: {e}")
+            return False
+
+    async def get_state_value(self, key: str, default: Any = None) -> Any:
+        """Retrieve state value from sentinel_kv_state."""
+        try:
+            async with get_db_connection(self.db_path) as conn:
+                cursor = await conn.execute('SELECT value FROM sentinel_kv_state WHERE key = ?', (key,))
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        return json.loads(row[0])
+                    except Exception:
+                        return row[0]
+        except Exception as e:
+            logger.error(f"Error reading state value {key}: {e}")
+        return default
+
+    async def set_state_value(self, key: str, value: Any) -> None:
+        """Upsert state value in sentinel_kv_state."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        val_str = json.dumps(value) if not isinstance(value, str) else value
+        try:
+            async with get_db_connection(self.db_path) as conn:
+                await conn.execute('''
+                    INSERT INTO sentinel_kv_state (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                ''', (key, val_str, now_iso))
+                await conn.commit()
+        except Exception as e:
+            logger.error(f"Error persisting state value {key}: {e}")
+
     # STATE CONSOLIDATION & EVICTION
     # --------------------------------------------------------------------------
 

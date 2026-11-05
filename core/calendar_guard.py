@@ -162,29 +162,9 @@ class CalendarGuard:
             
         return True, notify_str
 
-    def is_circuit_breaker_active(self) -> Any:
-        """Helper checking if calendar blackout is currently active (sync & async compatible)."""
+    def is_circuit_breaker_active(self) -> bool:
+        """Helper checking if calendar blackout is currently active."""
         is_blackout, _ = self.check_blackout_window()
-        return _AwaitableBool(is_blackout)
-
-
-class _AwaitableBool:
-    """Wrapper that evaluates as a boolean synchronously and is awaitable in coroutines."""
-    def __init__(self, value: bool) -> None:
-        self._value: bool = value
-
-    def __bool__(self) -> bool:
-        return self._value
-
-    def __eq__(self, other: Any) -> bool:
-        return bool(self._value == other)
-
-    def __repr__(self) -> str:
-        return repr(self._value)
-
-    def __await__(self):
-        async def _coro():
-            return self._value
-        return _coro().__await__()
+        return bool(is_blackout)
 
 

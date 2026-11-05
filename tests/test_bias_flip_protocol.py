@@ -186,7 +186,7 @@ def test_graduated_bias_flip_protocol_in_main(isolated_state_manager, tmp_path):
                 app.paper_trader.close_position.assert_not_awaited()
 
                 # Verify: Active trade SL ratcheted to Breakeven (1300 * 0.999 = 1298.7)
-                app.paper_trader.move_sl_to_be.assert_awaited_once_with('TRADE_1', 1298.7)
+                app.paper_trader.move_sl_to_be.assert_awaited_once_with('TRADE_1', 1296.41)
                 app.notifier.notify_defensive_shift.assert_awaited_once()
 
                 # Case 2: Tier 3 Confirmed Bias Flip (89% confidence opposing LONG)

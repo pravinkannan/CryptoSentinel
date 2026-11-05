@@ -85,11 +85,12 @@ class MarketDataIngestionStep:
             age = (now_utc - latest_timestamp).total_seconds()
 
         is_recon = context.metadata.get('is_recon', False)
-        if age > 330 and not is_recon:
+        max_stale = int(getattr(settings, 'max_candle_staleness_seconds', 390)) if settings else 390
+        if age > max_stale and not is_recon:
             logger.warning(f"[HEARTBEAT ERROR] Stale market data for {symbol}. Candle age: {age:.0f}s. Pausing signal dispatch.")
-            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Stale market data (age: {age:.0f}s > 330s).")
+            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Stale market data (age: {age:.0f}s > {max_stale}s).")
             context.metadata['recon_status'] = 'STALE_DATA'
-            context.metadata['recon_reason'] = f'Market data stale (age: {age:.0f}s > 330s)'
+            context.metadata['recon_reason'] = f'Market data stale (age: {age:.0f}s > {max_stale}s)'
             return None
 
         context.raw_candles['5m'] = df_5m
@@ -116,7 +117,9 @@ class MarketDataIngestionStep:
                 )
 
         # 5. Update pending paper trades for symbol (once per symbol cycle on primary timeframe)
-        is_primary_tf = not getattr(settings, 'timeframes', None) or context.timeframe == settings.timeframes[0]
+        sym_tfs = settings.symbol_timeframes.get(symbol, settings.timeframes) if (hasattr(settings, 'symbol_timeframes') and symbol in settings.symbol_timeframes) else getattr(settings, 'timeframes', ['5m'])
+        base_tf = sym_tfs[0] if sym_tfs else '5m'
+        is_primary_tf = not sym_tfs or context.timeframe == base_tf
         if is_primary_tf and context.current_price > 0 and self.paper_trader and not is_recon:
             await self.paper_trader.update_trades(
                 symbol, df_5m, self.journal_manager, self.notifier, self.ai_evaluator, self.market_data, self.state_manager
@@ -162,7 +165,9 @@ class PatternRecognitionStep:
         context.current_price = current_price
 
         # Check Dynamic Levels on base timeframe (maintains situational awareness)
-        if tf == settings.timeframes[0] and self.state_manager:
+        sym_tfs = settings.symbol_timeframes.get(context.symbol, settings.timeframes) if (hasattr(settings, 'symbol_timeframes') and context.symbol in settings.symbol_timeframes) else getattr(settings, 'timeframes', ['5m'])
+        base_tf = sym_tfs[0] if sym_tfs else '5m'
+        if tf == base_tf and self.state_manager:
             crossed_levels = self.signal_generator.check_dynamic_levels(
                 context.symbol, current_price, self.state_manager, df
             )
@@ -253,6 +258,12 @@ class ConfluenceEvaluationStep:
         symbol = context.symbol
         tf = context.timeframe
         signal_data = context.signal_data
+        if '_override_standard_threshold' not in signal_data:
+            signal_data['_override_standard_threshold'] = getattr(settings, 'min_dispatch_confidence', 85.5)
+        if '_override_reversal_threshold' not in signal_data:
+            signal_data['_override_reversal_threshold'] = getattr(settings, 'min_dispatch_confidence_reversal', 75.0)
+        if '_override_vip_threshold' not in signal_data:
+            signal_data['_override_vip_threshold'] = getattr(settings, 'vip_confidence_threshold', 89.0)
         direction_raw = str(signal_data.get('direction', 'NEUTRAL')).upper()
         is_long = direction_raw in ['LONG', 'BULLISH', 'BUY']
         is_short = direction_raw in ['SHORT', 'BEARISH', 'SELL']
@@ -377,24 +388,24 @@ class ConfluenceEvaluationStep:
         TF_RANKS = {'5m': 1, '15m': 2, '1h': 3, '4h': 4}
         curr_rank = TF_RANKS.get(tf, 2)
 
-        # Prune inactive or closed signals from active_signals state
+        # Prune inactive or expired signals globally across all symbols
         for k, sig in list(active_signals.items()):
-            if not k.startswith(f"{symbol}_"):
-                continue
             try:
                 sig_time = datetime.fromisoformat(sig['timestamp'])
-                sig_ttl = sig.get('ttl_mins', getattr(settings, 'trade_ttl_minutes', 180))
+                sig_ttl = sig.get('ttl_mins', getattr(settings, 'trade_ttl_minutes', 1080))
                 if (now - sig_time).total_seconds() > sig_ttl * 60:
                     del active_signals[k]
                     continue
             except Exception:
+                del active_signals[k]
                 continue
 
+            sig_sym = sig.get('symbol') or k.split('_')[0]
             sig_dir = sig.get('direction', '')
             if self.paper_trader and hasattr(self.paper_trader, 'is_trade_active'):
                 try:
                     is_active = await self.paper_trader.is_trade_active(
-                        symbol=symbol,
+                        symbol=sig_sym,
                         trade_id=sig.get('trade_id'),
                         direction=sig_dir
                     )
@@ -422,7 +433,10 @@ class ConfluenceEvaluationStep:
             (isinstance(breakdown, dict) and breakdown.get('key_level_rejection') and breakdown.get('rsi_divergence')) or
             (signal_data.get('key_level_rejection') and signal_data.get('rsi_divergence'))
         )
-        dispatch_floor = float(getattr(settings, 'min_dispatch_confidence_reversal', 80.0)) if is_reversal_setup else float(getattr(settings, 'min_dispatch_confidence', 86.0))
+        if is_reversal_setup:
+            dispatch_floor = float(signal_data.get('_override_reversal_threshold', getattr(settings, 'min_dispatch_confidence_reversal', 75.0)))
+        else:
+            dispatch_floor = float(signal_data.get('_override_standard_threshold', getattr(settings, 'min_dispatch_confidence', 85.5)))
 
         pattern_name = signal_data['patterns'][0] if signal_data.get('patterns') else 'Unknown'
         opposing_to_invalidate = []
@@ -439,15 +453,22 @@ class ConfluenceEvaluationStep:
                 return None
             elif final_score < bias_flip_min:
                 logger.warning(f"⚠️ Threat Defensive Mode triggered: {symbol} {tf} {direction} ({final_score}%) opposing active position. Ratcheting SL to BE.")
+                vip_thresh = float(getattr(settings, 'vip_confidence_threshold', 92.0))
                 for pos in opposing_db_positions:
+                    pos_tf = pos.get('timeframe', '15m')
+                    pos_rank = TF_RANKS.get(pos_tf, 2)
+                    if curr_rank < pos_rank and final_score < vip_thresh:
+                        logger.info(f"🛡️ Shielded HTF trade {pos['id']} ({pos_tf}) from LTF {tf} threat ratchet.")
+                        continue
                     entry = pos.get('entry', 0.0)
                     current_sl = pos.get('stop_loss', 0.0)
                     pos_dir = pos.get('direction', '')
+                    true_be_buffer = getattr(settings, 'true_be_buffer', 0.00276)
                     if pos_dir.upper() == 'LONG':
-                        be_price = round(entry * 1.001, 4 if entry < 10 else 2)
+                        be_price = round(entry * (1.0 + true_be_buffer), 4 if entry < 10 else 2)
                         should_ratchet = (current_sl < be_price)
                     else:
-                        be_price = round(entry * 0.999, 4 if entry < 10 else 2)
+                        be_price = round(entry * (1.0 - true_be_buffer), 4 if entry < 10 else 2)
                         should_ratchet = (current_sl > be_price)
                     if should_ratchet and self.paper_trader:
                         await self.paper_trader.move_sl_to_be(str(pos['id']), be_price)
@@ -462,6 +483,10 @@ class ConfluenceEvaluationStep:
                             )
 
                 for opp_k, sig in opposing_state_signals:
+                    sig_tf = sig.get('timeframe', opp_k.split('_')[-1])
+                    sig_rank = TF_RANKS.get(sig_tf, 2)
+                    if curr_rank < sig_rank and final_score < vip_thresh:
+                        continue
                     sig_entry = sig.get('entry', 0.0)
                     sig_dir = sig.get('direction', '')
                     if sig_entry > 0:
@@ -516,6 +541,12 @@ class RiskAndPositionSizingStep:
         symbol = context.symbol
         tf = context.timeframe
         signal_data = context.signal_data
+        if '_override_standard_threshold' not in signal_data:
+            signal_data['_override_standard_threshold'] = getattr(settings, 'min_dispatch_confidence', 85.5)
+        if '_override_reversal_threshold' not in signal_data:
+            signal_data['_override_reversal_threshold'] = getattr(settings, 'min_dispatch_confidence_reversal', 75.0)
+        if '_override_vip_threshold' not in signal_data:
+            signal_data['_override_vip_threshold'] = getattr(settings, 'vip_confidence_threshold', 89.0)
         ai_data = context.evaluated_signal
         direction = ai_data.get('trade_direction', 'NEUTRAL')
         confidence = float(ai_data.get('final_confidence_rating', 0.0))
@@ -524,6 +555,36 @@ class RiskAndPositionSizingStep:
         signal_key = f"{symbol}_{tf}"
         if self.state_manager and hasattr(self.state_manager, 'state'):
             active_signals = self.state_manager.state.get("active_signals", {})
+            now = context.now_utc
+
+            # Prune expired or closed signals across entire active_signals dictionary
+            for k, sig in list(active_signals.items()):
+                try:
+                    sig_time = datetime.fromisoformat(sig['timestamp'])
+                    sig_ttl = sig.get('ttl_mins', getattr(settings, 'trade_ttl_minutes', 1080))
+                    if (now - sig_time).total_seconds() > sig_ttl * 60:
+                        del active_signals[k]
+                        continue
+                except Exception:
+                    del active_signals[k]
+                    continue
+
+                sig_sym = sig.get('symbol') or k.split('_')[0]
+                sig_dir = sig.get('direction', '')
+                paper_trader = getattr(self, 'paper_trader', None)
+                if paper_trader and hasattr(paper_trader, 'is_trade_active'):
+                    try:
+                        is_active = await paper_trader.is_trade_active(
+                            symbol=sig_sym,
+                            trade_id=sig.get('trade_id'),
+                            direction=sig_dir
+                        )
+                        if is_active is False:
+                            del active_signals[k]
+                            continue
+                    except Exception:
+                        pass
+
             if signal_key in active_signals and active_signals[signal_key].get('direction') == direction:
                 sig = active_signals[signal_key]
                 try:
@@ -540,8 +601,48 @@ class RiskAndPositionSizingStep:
                 except Exception:
                     pass
 
+            # Armor Patch: Asset-level position lock
+            allow_multi_tf = getattr(settings, 'allow_multi_timeframe_positions_per_symbol', True) if settings else True
+            other_active = {k: v for k, v in active_signals.items() if k != signal_key}
+            if not allow_multi_tf:
+                open_symbols = [v.get('symbol') or k.split('_')[0] for k, v in other_active.items()]
+                if symbol in open_symbols:
+                    logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Symbol {symbol} already has an active position open.")
+                    return None
+            else:
+                # Allow same-direction harmonic positions across timeframes, but prevent contradictory opposing positions
+                opposing_same_symbol = [
+                    v for k, v in other_active.items()
+                    if (v.get('symbol') or k.split('_')[0]) == symbol and v.get('direction') and v.get('direction') != direction
+                ]
+                if opposing_same_symbol:
+                    logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Symbol {symbol} has an active opposing position on another timeframe.")
+                    return None
+
+            # Armor Patch: Portfolio basket correlation guard (configurable max active in same direction)
+            max_same_dir = int(getattr(settings, 'max_same_direction_positions', 5)) if settings else 5
+            if max_same_dir > 0:
+                same_dir_count = sum(1 for v in active_signals.values() if v.get('direction') == direction)
+                if same_dir_count >= max_same_dir:
+                    logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Portfolio correlation guard: max {max_same_dir} active {direction} positions.")
+                    return None
+
         vip_thresh = float(getattr(settings, 'vip_confidence_threshold', 92.0)) if settings else 92.0
         is_vip = (confidence >= vip_thresh)
+
+        # Live Bid-Ask Spread Gate (Institutional Protection against Scalper's Slippage Trap)
+        micro = context.microstructure or {}
+        best_bid = float(micro.get('best_bid', 0.0))
+        best_ask = float(micro.get('best_ask', 0.0))
+        if best_bid > 0 and best_ask > 0 and tf in ['5m', '15m']:
+            spread_pct = (best_ask - best_bid) / best_bid * 100.0
+            is_major = ("BTC" in symbol or "ETH" in symbol)
+            max_spread = float(getattr(settings, 'max_scalp_spread_pct', 0.08)) if is_major else float(getattr(settings, 'max_scalp_spread_pct_alt', 0.12))
+            if spread_pct > max_spread and not is_vip:
+                logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Wide spread ({spread_pct:.3f}% > {max_spread:.3f}%). Slippage risk.")
+                context.metadata['recon_status'] = 'REJECTED'
+                context.metadata['recon_reason'] = f'Wide spread ({spread_pct:.3f}% > {max_spread:.3f}%)'
+                return None
 
         signal_data['symbol'] = symbol
         signal_data['timeframe'] = tf
@@ -555,11 +656,13 @@ class RiskAndPositionSizingStep:
 
         # Funding rate filter check
         fr = float(sized_data.get('funding_rate', 0.0))
-        if direction == 'SHORT' and fr < -0.04 and not is_vip:
-            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Adverse funding rate: {fr}%.")
+        fr_short_lim = float(getattr(settings, 'adverse_funding_rate_short', -0.06)) if settings else -0.06
+        fr_long_lim = float(getattr(settings, 'adverse_funding_rate_long', 0.08)) if settings else 0.08
+        if direction == 'SHORT' and fr < fr_short_lim and not is_vip:
+            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Adverse funding rate: {fr}% (< {fr_short_lim}%).")
             return None
-        if direction == 'LONG' and fr > 0.06 and not is_vip:
-            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Adverse funding rate: {fr}%.")
+        if direction == 'LONG' and fr > fr_long_lim and not is_vip:
+            logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Adverse funding rate: {fr}% (> {fr_long_lim}%).")
             return None
 
         context.sized_order = sized_data

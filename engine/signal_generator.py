@@ -74,6 +74,8 @@ class SignalGeneratorService:
             
         dynamic_levels = self.get_dynamic_levels(current_price, symbol, df)
         
+        if "last_crossed_alerts" not in state_manager.state:
+            state_manager.state["last_crossed_alerts"] = {}
         if symbol not in state_manager.state["last_crossed_alerts"]:
             state_manager.state["last_crossed_alerts"][symbol] = []
         
@@ -118,6 +120,8 @@ class SignalGeneratorService:
 
     def _compute_indicators(self, df: pd.DataFrame) -> None:
         """Compute TA indicators on the dataframe in place."""
+        if 'EMA_20' in df.columns and 'RSI_14' in df.columns and 'VOL_SMA_20' in df.columns and any(c.startswith('BBL_') for c in df.columns):
+            return
         df.ta.ema(length=20, append=True)
         df.ta.ema(length=50, append=True)
         df.ta.rsi(length=14, append=True)
@@ -128,6 +132,10 @@ class SignalGeneratorService:
         # Volatility & Squeeze
         df.ta.bbands(length=20, std=2, append=True)
         df.ta.kc(length=20, scalar=1.5, append=True)
+        try:
+            df.ta.adx(length=14, append=True)
+        except Exception as e:
+            logger.debug(f"ADX calculation exception: {e}")
         
         # VWAP (anchored on DatetimeIndex with deterministic cumulative fallback)
         try:
@@ -145,7 +153,7 @@ class SignalGeneratorService:
             logger.debug(f"VWAP calculation exception: {e}")
         
         try:
-            df.ta.cdl_pattern(name="all", append=True)
+            df.ta.cdl_pattern(name=["engulfing", "hammer", "marubozu", "morningstar", "eveningstar", "piercing", "darkcloudcover", "shootingstar", "hangingman"], append=True)
         except Exception:
             pass
 
@@ -261,20 +269,26 @@ class SignalGeneratorService:
         liq_zones = self.risk_manager.calculate_liquidation_zones(df)
 
         # 4. Timeframe-Aware Target Horizon & Internal TTL
-        ttl_mins = settings.trade_ttl_minutes
-        if timeframe == '5m':
+        if timeframe == '1h':
+            ttl_hours = float(getattr(settings, 'trade_ttl_hours_1h', 72.0))
+            ttl_mins = int(ttl_hours * 60)
+            target_resolution = f"1 – {int(ttl_hours // 24)} Days (Swing)"
+            expected_horizon_mins = 1440
+        elif timeframe == '4h':
+            ttl_hours = float(getattr(settings, 'trade_ttl_hours_4h', 168.0))
+            ttl_mins = int(ttl_hours * 60)
+            target_resolution = f"3 – {int(ttl_hours // 24)} Days (Macro Swing)"
+            expected_horizon_mins = 4320
+        elif timeframe == '5m':
+            ttl_mins = settings.trade_ttl_minutes
             target_resolution = "30 – 60 Mins (Intraday Scalp)"
             expected_horizon_mins = 60
         elif timeframe == '15m':
+            ttl_mins = settings.trade_ttl_minutes
             target_resolution = "1 – 3 Hours (Intraday)"
             expected_horizon_mins = 180
-        elif timeframe == '1h':
-            target_resolution = "4 – 8 Hours (Swing)"
-            expected_horizon_mins = 480
-        elif timeframe == '4h':
-            target_resolution = "12 – 24 Hours (Macro Swing)"
-            expected_horizon_mins = 1440
         else:
+            ttl_mins = settings.trade_ttl_minutes
             target_resolution = f"4 – {int(settings.trade_ttl_hours)} Hours"
             expected_horizon_mins = settings.trade_ttl_minutes
 
@@ -307,9 +321,20 @@ class SignalGeneratorService:
         volume_ratio = round(effective_vol / vol_sma, 2) if vol_sma > 0 else 1.0
         volume_usd = round(effective_vol * entry, 2)
         candle_open = float(latest.get('open', entry))
+        candle_high = float(latest.get('high', entry))
+        candle_low = float(latest.get('low', entry))
+        candle_range = candle_high - candle_low
+        if candle_range > 0:
+            upper_wick = candle_high - max(candle_open, entry)
+            lower_wick = min(candle_open, entry) - candle_low
+            upper_wick_ratio = round(upper_wick / candle_range, 4)
+            lower_wick_ratio = round(lower_wick / candle_range, 4)
+        else:
+            upper_wick_ratio = 0.0
+            lower_wick_ratio = 0.0
 
-        bbl = float(latest.get('BBL_20_2.0', 0.0))
-        bbu = float(latest.get('BBU_20_2.0', 0.0))
+        bbl = float(latest.get('BBL_20_2.0_2.0', latest.get('BBL_20_2.0', 0.0)))
+        bbu = float(latest.get('BBU_20_2.0_2.0', latest.get('BBU_20_2.0', 0.0)))
         prev_low = float(df.iloc[-2]['low']) if len(df) >= 2 else entry
         prev_high = float(df.iloc[-2]['high']) if len(df) >= 2 else entry
         bb_bounce = False
@@ -341,18 +366,44 @@ class SignalGeneratorService:
         is_long = direction in ["Bullish", "LONG", "BUY"]
         is_short = direction in ["Bearish", "SHORT", "SELL"]
 
-        # 4H macro trend conflict & counter-trend scalp filter
+        # 4H macro trend conflict & counter-trend scalp filter (with Mean Reversion Bypass)
         opposes_4h = (htf_4h_trend.startswith('Macro Down') and is_long) or (htf_4h_trend.startswith('Macro Up') and is_short)
-        if opposes_4h:
+        
+        # Mean Reversion Bypass: If price drastically extended from VWAP and RSI oversold/overbought
+        raw_vwap_val = latest.get('VWAP', 0.0)
+        vwap_numeric = float(raw_vwap_val) if (pd.notna(raw_vwap_val) and float(raw_vwap_val) > 0) else 0.0
+        vwap_dist_pct = (abs(entry - vwap_numeric) / vwap_numeric * 100.0) if (vwap_numeric > 0 and entry > 0) else 0.0
+        rsi_val = float(latest.get('RSI_14', 50.0))
+        
+        mean_reversion_bypass = False
+        if opposes_4h and timeframe in ['5m', '15m']:
+            if is_long and (entry < vwap_numeric or vwap_numeric == 0.0) and vwap_dist_pct >= 1.5 and rsi_val <= 30.0:
+                mean_reversion_bypass = True
+            elif is_short and (entry > vwap_numeric or vwap_numeric == 0.0) and vwap_dist_pct >= 1.5 and rsi_val >= 70.0:
+                mean_reversion_bypass = True
+
+        if mean_reversion_bypass:
+            macro_4h_conflict = False
+            rationale.append(f"Mean reversion bypass active: 4H counter-trend permitted (VWAP dist {vwap_dist_pct:.2f}%, RSI {rsi_val:.1f}).")
+        elif opposes_4h:
             if timeframe in ['5m', '15m']:
                 # Counter-trend scalps require a higher bar:
-                # Confirmed key level rejection AND institutional volume surge (> 2.5x SMA)
-                if key_level_rejection and volume_ratio >= 2.5:
+                # Confirmed key level rejection or reversal pattern AND volume surge (>= 1.5x SMA for reversal, else 2.5x)
+                has_rev = is_rejection_pattern or any('Divergence' in s for s in signals)
+                req_vol = 1.5 if has_rev else 2.5
+                if key_level_rejection and volume_ratio >= req_vol:
                     macro_4h_conflict = False
-                    rationale.append(f"Counter-trend scalp permitted: strong volume ({volume_ratio:.2f}x) & key level rejection.")
+                    rationale.append(f"Counter-trend scalp permitted: confirmed structure ({volume_ratio:.2f}x volume) & key level rejection.")
                 else:
                     macro_4h_conflict = True
-                    rationale.append(f"4H Macro conflict: counter-trend {timeframe} scalp requires key level rejection & volume >= 2.5x SMA (got {volume_ratio:.2f}x).")
+                    rationale.append(f"4H Macro conflict: counter-trend {timeframe} scalp requires key level rejection & volume >= {req_vol:.1f}x SMA (got {volume_ratio:.2f}x).")
+            elif timeframe in ['1h', '4h']:
+                has_rev = any('Divergence' in s for s in signals)
+                if has_rev and key_level_rejection:
+                    macro_4h_conflict = False
+                    rationale.append("Counter-trend 1H scalp permitted: RSI divergence at key level.")
+                else:
+                    macro_4h_conflict = True
             else:
                 macro_4h_conflict = True
         else:
@@ -364,9 +415,9 @@ class SignalGeneratorService:
         )
         # Resolve order book liquidity magnets against finalized stop loss
         has_sweep_risk = False
-        ob_defensive_shield = any(m.get('role') == 'DEFENSIVE_SHIELD' for m in liquidity_magnets)
+        ob_defensive_shield = bool(microstructure.get('ob_defensive_shield', False)) or any(m.get('role') == 'DEFENSIVE_SHIELD' for m in liquidity_magnets)
         blocking_ob_wall = any(m.get('role') in ['BLOCKING_RESISTANCE', 'BLOCKING_SUPPORT'] for m in liquidity_magnets)
-        target_magnet_present = any(m.get('role') in ['TARGET_ACCELERATOR', 'MAGNET', 'ACCELERATOR'] for m in liquidity_magnets)
+        target_magnet_present = bool(microstructure.get('target_magnet_present', False)) or any(m.get('role') in ['TARGET_ACCELERATOR', 'MAGNET', 'ACCELERATOR'] for m in liquidity_magnets)
 
         sl = float(risk_params.get('stop_loss', 0.0))
         for m in liquidity_magnets:
@@ -388,11 +439,29 @@ class SignalGeneratorService:
         is_btc = "BTC" in symbol.upper()
         btc_trend_aligned = True if is_btc else ((is_long and 'Up' in btc_trend) or (is_short and 'Down' in btc_trend))
         rsi_divergence = any('RSI Divergence' in str(p) for p in signals)
-        bbl = float(latest.get('BBL_20_2.0', 0.0))
-        kcl = float(latest.get('KCLe_20_1.5', latest.get('KCLs_20_1.5', 0.0)))
-        bbu = float(latest.get('BBU_20_2.0', 0.0))
-        kcu = float(latest.get('KCUe_20_1.5', latest.get('KCUs_20_1.5', 0.0)))
-        is_squeezed = (bbl > kcl) and (bbu < kcu) if (kcl > 0 and kcu > 0) else False
+        adx_raw = latest.get('ADX_14', 25.0)
+        adx_val = float(adx_raw) if pd.notna(adx_raw) else 25.0
+
+        bbl = float(latest.get('BBL_20_2.0_2.0', latest.get('BBL_20_2.0', 0.0)))
+        kcl = float(latest.get('KCLe_20_1.5', latest.get('KCL_20_1.5', latest.get('KCLs_20_1.5', 0.0))))
+        bbu = float(latest.get('BBU_20_2.0_2.0', latest.get('BBU_20_2.0', 0.0)))
+        kcu = float(latest.get('KCUe_20_1.5', latest.get('KCU_20_1.5', latest.get('KCUs_20_1.5', 0.0))))
+        sq_active_now = bool(bbl > kcl and bbu < kcu and bbl > 0 and kcl > 0)
+        
+        # Pillar 2: Check extreme market compression coil immediately preceding or during breakout
+        recent_sq = False
+        bbl_col = 'BBL_20_2.0_2.0' if 'BBL_20_2.0_2.0' in df.columns else ('BBL_20_2.0' if 'BBL_20_2.0' in df.columns else None)
+        kcl_col = 'KCLe_20_1.5' if 'KCLe_20_1.5' in df.columns else ('KCL_20_1.5' if 'KCL_20_1.5' in df.columns else None)
+        bbu_col = 'BBU_20_2.0_2.0' if 'BBU_20_2.0_2.0' in df.columns else ('BBU_20_2.0' if 'BBU_20_2.0' in df.columns else None)
+        kcu_col = 'KCUe_20_1.5' if 'KCUe_20_1.5' in df.columns else ('KCU_20_1.5' if 'KCU_20_1.5' in df.columns else None)
+        if bbl_col and kcl_col and bbu_col and kcu_col:
+            trail_bbl = df[bbl_col].tail(4)
+            trail_kcl = df[kcl_col].tail(4)
+            trail_bbu = df[bbu_col].tail(4)
+            trail_kcu = df[kcu_col].tail(4)
+            recent_sq = bool(((trail_bbl > trail_kcl) & (trail_bbu < trail_kcu)).any())
+            
+        is_squeezed = bool(sq_active_now or recent_sq)
 
         # 6. Build and Validate Typed Signal Payload
         return SignalData(
@@ -400,6 +469,7 @@ class SignalGeneratorService:
             symbol=symbol,
             timeframe=timeframe,
             htf_trend=htf_trend,
+            htf_1h_trend=htf_trend,
             htf_4h_trend=htf_4h_trend,
             btc_trend=btc_trend,
             close=entry,
@@ -438,11 +508,17 @@ class SignalGeneratorService:
             oi_direction=oi_direction,
             liquidity_magnets=liquidity_magnets,
             rsi_val=rsi_val,
+            rsi_14=rsi_val,
+            adx_14=adx_val,
             volume_ratio=volume_ratio,
             volume_usd=volume_usd,
             dynamic_level_reaction=dynamic_level_reaction,
             bb_bounce=bb_bounce,
             open=candle_open,
+            high=candle_high,
+            low=candle_low,
+            upper_wick_ratio=upper_wick_ratio,
+            lower_wick_ratio=lower_wick_ratio,
             vol_sma_20=vol_sma,
             volume=effective_vol,
             key_level_rejection=key_level_rejection,

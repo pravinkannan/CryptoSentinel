@@ -99,12 +99,10 @@ def test_risk_manager_anti_sweep_5m():
 
     params = rm.compute_risk_parameters(df, "ETH/USDT", "5m", "Bearish", 100.0, "NORMAL")
     assert params is not None
-    # Lookback 15 captures high=101.5. SL = 101.5 + (0.5 * 1.2) = 102.10
-    assert params['stop_loss'] == 102.10
-    # sl_pct = 2.10%
-    assert params['sl_pct'] == 2.10
-    # leverage with roe_risk_budget=20.0: floor(20 / 2.10) = 9x
-    assert params['leverage_val'] == 9.0
+    # Pillar 4 Dynamic ATR Stop-Loss: entry + (atr * 1.5) = 100.75, clamped by 0.90% floor to 100.90
+    assert params['stop_loss'] == 100.90
+    assert params['sl_pct'] == 0.90
+    assert params['leverage_val'] == 15.0  # Dynamic leverage capped at ETH tier max 15x
     assert params['roe_sl'] <= 20.0
 
 
@@ -128,9 +126,9 @@ def test_risk_manager_anti_sweep_floor_0_90():
     # Enforces 0.90% floor
     assert params['sl_pct'] == 0.90
     assert params['stop_loss'] == 100.90
-    # Dynamic leverage: floor(20.0 / 0.90) = 22x
-    assert params['leverage_val'] == 22.0
-    assert params['roe_sl'] == 19.80  # Maintains 20% ROE budget!
+    # Dynamic leverage: floor(20.0 / 0.90) = 22x, capped at tier_max_lev (15x for ETH)
+    assert params['leverage_val'] == 15.0
+    assert params['roe_sl'] == 13.50  # Maintains <= 20% ROE budget!
 
 
 def test_risk_manager_anti_sweep_15m():
@@ -150,9 +148,9 @@ def test_risk_manager_anti_sweep_15m():
 
     params = rm.compute_risk_parameters(df, "ETH/USDT", "15m", "Bullish", 100.0, "NORMAL")
     assert params is not None
-    # Tier 1 (ETH): lookback=12 captures 98.5, atr_mult=1.2. SL = 98.5 - (0.5 * 1.2) = 97.90
-    assert params['stop_loss'] == 97.90
-    assert params['sl_pct'] == 2.10
+    # Pillar 4 Dynamic ATR Stop-Loss: entry - (atr * 1.5) = 99.25, clamped by 0.90% floor to 99.10
+    assert params['stop_loss'] == 99.10
+    assert params['sl_pct'] == 0.90
 
 
 def test_risk_manager_tier2_high_beta_volatility():
@@ -171,9 +169,9 @@ def test_risk_manager_tier2_high_beta_volatility():
 
     params = rm.compute_risk_parameters(df, "SOL/USDT", "15m", "Bullish", 100.0, "NORMAL")
     assert params is not None
-    # Tier 2 (SOL): atr_mult=1.6 -> SL = 98.5 - (0.5 * 1.6) = 97.70
-    assert params['stop_loss'] == 97.70
-    assert params['sl_pct'] == 2.30
+    # Tier 2 (SOL): Pillar 4 Dynamic ATR Stop-Loss clamped at min_sl_pct 1.50% -> 98.50
+    assert params['stop_loss'] == 98.50
+    assert params['sl_pct'] == 1.50
     # Leverage capped at 12x
     assert params['leverage_val'] <= 12.0
     assert params['roe_sl'] <= 28.0
@@ -271,5 +269,46 @@ def test_recalibrate_for_tier_standard_swing():
     assert recal['leverage_val'] <= 25.0
     # 1.0R distance: 84000 - 83000 = 1000 -> breakeven_price = 85000.0
     assert recal['breakeven_price'] == 85000.0
+
+
+def test_recalibrate_for_tier_vip_harmonized_15m():
+    """Verify VIP setup on 15m calibrates achievable intraday TP1 targets (1.2%-1.8%)."""
+    from engine.risk_manager import RiskManager
+    rm = RiskManager(atr_period=14)
+
+    signal_data = {
+        'symbol': 'ETH/USDT',
+        'timeframe': '15m',
+        'direction': 'LONG',
+        'entry': 2500.0,
+        'stop_loss': 2475.0,  # 1.0% SL
+    }
+
+    recal = rm.recalibrate_for_tier(signal_data, is_vip=True)
+    assert recal['setup_type'] == "VIP_SWING"
+    assert 1.20 <= recal['tp1_pct'] <= 1.80
+    assert recal['tp1'] > 2500.0
+    assert recal['breakeven_price'] == 2525.0
+
+
+def test_recalibrate_for_tier_commodity_gold_targets():
+    """Verify XAU/USDT commodity setup uses volatility-adapted targets (0.45%-0.95%)."""
+    from engine.risk_manager import RiskManager
+    rm = RiskManager(atr_period=14)
+
+    signal_data = {
+        'symbol': 'XAU/USDT',
+        'timeframe': '15m',
+        'direction': 'SHORT',
+        'entry': 4000.0,
+        'stop_loss': 4020.0,  # 0.50% SL
+    }
+
+    recal = rm.recalibrate_for_tier(signal_data, is_vip=True)
+    assert recal['setup_type'] == "VIP_SWING"
+    assert recal['leverage_val'] <= 25.0
+    assert 0.45 <= recal['tp1_pct'] <= 0.95
+    assert recal['tp1'] < 4000.0
+
 
 

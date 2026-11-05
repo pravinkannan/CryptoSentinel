@@ -7,6 +7,7 @@ import json
 import logging
 import asyncio
 import os
+from datetime import datetime, timezone
 from typing import Set, Dict, List, Any, Optional, TypedDict
 
 logger = logging.getLogger(__name__)
@@ -64,21 +65,50 @@ class StateManager:
                     self.state["last_crossed_alerts"] = loaded.get("last_crossed_alerts", {})
                     self.state["active_signals"] = loaded.get("active_signals", {})
                     self.state["dynamic_level_alert_timestamps"] = loaded.get("dynamic_level_alert_timestamps", {})
+                    self.purge_expired_signals()
                     logger.info("State loaded successfully.")
             except Exception as e:
                 logger.error(f"Error loading state from {self.filename}: {e}", exc_info=True)
 
+    def purge_expired_signals(self, now_utc: Optional[datetime] = None) -> int:
+        """Purge active signals whose TTL has lapsed."""
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+        purged = 0
+        cleaned = {}
+        for sig_key, sig_data in self.state.get("active_signals", {}).items():
+            ts_str = sig_data.get("timestamp")
+            ttl_mins = float(sig_data.get("ttl_mins", 1080))
+            if not ts_str:
+                continue
+            try:
+                sig_time = datetime.fromisoformat(str(ts_str).replace(' UTC', '+00:00'))
+                if sig_time.tzinfo is None:
+                    sig_time = sig_time.replace(tzinfo=timezone.utc)
+                if (now_utc - sig_time).total_seconds() > ttl_mins * 60:
+                    purged += 1
+                    continue
+            except Exception:
+                pass
+            cleaned[sig_key] = sig_data
+        self.state["active_signals"] = cleaned
+        if purged > 0:
+            logger.info(f"🧹 Purged {purged} expired active signal(s) from state memory.")
+        return purged
+
     async def save_state(
         self, 
-        seen_guids: Set[str], 
-        last_crossed_alerts: Dict[str, List[str]],
+        seen_guids: Optional[Set[str]] = None, 
+        last_crossed_alerts: Optional[Dict[str, List[str]]] = None,
         active_signals: Optional[Dict[str, Dict[str, Any]]] = None
     ) -> None:
         """Save state asynchronously to disk via atomic write."""
         async with self.lock:
             try:
-                self.state["seen_guids"] = list(seen_guids)
-                self.state["last_crossed_alerts"] = last_crossed_alerts
+                if seen_guids is not None:
+                    self.state["seen_guids"] = list(seen_guids)
+                if last_crossed_alerts is not None:
+                    self.state["last_crossed_alerts"] = last_crossed_alerts
                 if active_signals is not None:
                     self.state["active_signals"] = active_signals
                     

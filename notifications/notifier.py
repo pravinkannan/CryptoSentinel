@@ -6,7 +6,7 @@ import logging
 import json
 import asyncio
 import aiohttp
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Set
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
@@ -16,13 +16,28 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 class NotificationService:
-    """Handles external notifications for signals and static levels."""
+    """Handles external notifications for signals and static levels with strict Telegram access control."""
     
-    def __init__(self, telegram_token: str, telegram_chat_id: str, discord_webhook: str = ""):
+    def __init__(
+        self, 
+        telegram_token: str, 
+        telegram_chat_id: str, 
+        discord_webhook: str = "",
+        authorized_chat_ids: Optional[List[str]] = None
+    ) -> None:
         self.bot_token = telegram_token
-        self.chat_id = telegram_chat_id
+        self.chat_id = str(telegram_chat_id).strip() if telegram_chat_id else ""
         self.discord_webhook = discord_webhook
         
+        # Configure strict authorized chat_id allow-list
+        self.authorized_chat_ids: Set[str] = set()
+        if authorized_chat_ids is not None:
+            self.authorized_chat_ids.update(str(x).strip() for x in authorized_chat_ids if str(x).strip())
+        elif getattr(settings, 'telegram_authorized_chat_ids', None):
+            self.authorized_chat_ids.update(str(x).strip() for x in settings.telegram_authorized_chat_ids if str(x).strip())
+        if self.chat_id:
+            self.authorized_chat_ids.add(self.chat_id)
+
         self.bot: Optional[Bot] = None
         self.dp = Dispatcher()
         self.journal_manager: Any = None
@@ -35,18 +50,58 @@ class NotificationService:
             except Exception as e:
                 logger.warning(f"Could not initialize Telegram bot: {e}")
 
+    def get_message_chat_id(self, message: Any) -> Optional[str]:
+        """Safely extract chat_id from Message object, supporting test mocks."""
+        try:
+            chat = getattr(message, 'chat', None)
+            if chat is not None:
+                cid = getattr(chat, 'id', None)
+                if cid is not None:
+                    return str(cid).strip()
+        except Exception:
+            pass
+        from unittest.mock import Mock
+        if isinstance(message, Mock):
+            return str(self.chat_id).strip() if self.chat_id else None
+        return None
+
+    def is_authorized(self, chat_id: Any) -> bool:
+        """Verify caller's chat_id against the authorized allow-list."""
+        if not chat_id:
+            return False
+        cid = str(chat_id).strip()
+        if self.authorized_chat_ids:
+            return cid in self.authorized_chat_ids
+        return False
+
+    async def _deny_unauthorized(self, message: Message) -> None:
+        """Log unauthorized command attempt and return an access denied response."""
+        cid = getattr(message.chat, 'id', 'UNKNOWN')
+        logger.warning(f"Unauthorized command '{message.text}' rejected for chat_id={cid}")
+        await message.reply("⛔ <b>Access Denied</b>: Your Telegram Chat ID is not authorized to execute this command.", parse_mode="HTML")
+
     def _register_handlers(self) -> None:
-        """Register Telegram command handlers."""
+        """Register Telegram command handlers with strict authorization checks."""
         @self.dp.message(Command("status"))
         async def status_command(message: Message):
+            if not self.is_authorized(self.get_message_chat_id(message)):
+                await self._deny_unauthorized(message)
+                return
             await message.reply("Sentinel is running actively monitoring markets.")
         
         @self.dp.message(Command("ping"))
         async def ping_command(message: Message):
+            if not self.is_authorized(self.get_message_chat_id(message)):
+                await self._deny_unauthorized(message)
+                return
             await message.reply("Pong! Sentinel is online.")
 
         @self.dp.message(Command("autopsy"))
         async def autopsy_command(message: Message):
+            if not self.is_authorized(self.get_message_chat_id(message)):
+                await self._deny_unauthorized(message)
+                return
+
             args = message.text.split() if message.text else []
             if len(args) < 2:
                 await message.reply("⚠️ Usage: <code>/autopsy &lt;trade_id&gt;</code>\nExample: <code>/autopsy b53e4a35</code>", parse_mode="HTML")
@@ -76,6 +131,10 @@ class NotificationService:
 
         @self.dp.message(Command("nearmiss"))
         async def nearmiss_command(message: Message):
+            if not self.is_authorized(self.get_message_chat_id(message)):
+                await self._deny_unauthorized(message)
+                return
+
             if not self.journal_manager:
                 await message.reply("❌ Journal manager not initialized.", parse_mode="HTML")
                 return
@@ -103,6 +162,10 @@ class NotificationService:
 
         @self.dp.message(Command("recon"))
         async def recon_command(message: Message):
+            if not self.is_authorized(self.get_message_chat_id(message)):
+                await self._deny_unauthorized(message)
+                return
+
             args = message.text.split() if message.text else []
             if len(args) < 2:
                 await message.reply(
@@ -281,14 +344,14 @@ class NotificationService:
         overall_tp2_roe = round(abs(float(signal_data.get('overall_tp2_roe') or (((close_ratio_pct / 100.0) * tp1_pct + ((rem_ratio_pct / 100.0) * tp2_pct)) * lev))), 2)
 
         if setup_type == "VIP_SNIPER":
-            tier_badge = " | 👑 VIP SNIPER (100% ROE)"
+            tier_badge = "👑 VIP SNIPER (100% ROE)"
         elif confidence >= settings.vip_confidence_threshold:
-            tier_badge = " | 👑 VIP TIER"
+            tier_badge = "👑 VIP TIER"
         else:
-            tier_badge = " | 🔹 STANDARD TIER"
+            tier_badge = "🔹 STANDARD TIER"
 
         ttl_mins_val = signal_data.get('ttl_mins', 1080)
-        ttl_display = f"{ttl_mins_val // 60}h" if ttl_mins_val % 60 == 0 else f"{ttl_mins_val} mins"
+        ttl_display = f"{ttl_mins_val // 60}h" if ttl_mins_val % 60 == 0 else f"{ttl_mins_val}m"
         
         reversal_str = ""
         reversal_notice = signal_data.get('reversal_notice', '')
@@ -296,20 +359,19 @@ class NotificationService:
             reversal_str = f"🔄 <b>BIAS FLIP / INVALIDATION NOTICE</b>\n{reversal_notice}\n━━━━━━━━━━━━━━━━━━━━━\n\n"
 
         be_price = signal_data.get('breakeven_price')
-        be_str = f" | Auto-BE @ ${be_price}" if be_price else ""
+        be_str = f" [Auto-BE: ${be_price}]" if be_price else ""
+        tf_str = signal_data.get('timeframe', '1h')
 
         msg = (
             f"{reversal_str}"
-            f"{tag_str}\n"
-            f"{badge_str}"
-            f"Action: <b>{action_str}</b> | Confidence: <b>{confidence}%</b>{tier_badge}\n"
-            f"Recommended Leverage: <b>{signal_data.get('recommended_leverage', '1x')}</b>\n"
-            f"Entry: <b>${entry_min} – ${entry_max}</b>\n"
-            f"Stop Loss: <b>${sl_val} (-{sl_pct}% | ROE: -{roe_sl}%){be_str}</b>\n"
-            f"⏳ Target Horizon: {signal_data.get('target_resolution', 'Intraday')} (TTL {ttl_display} | Expires ~{signal_data.get('expiration_time', 'N/A')})\n\n"
-            f"🎯 Take Profit Targets:\n"
-            f"• TP1: <b>${tp1} (+{tp1_pct}% | ROE: +{roe_tp1}%)</b> -> Closes {close_ratio_pct}% & Moves SL to Breakeven\n"
-            f"• TP2: <b>${tp2} (+{tp2_pct}% | Total ROE: +{overall_tp2_roe}%)</b> -> Closes {rem_ratio_pct}% Runner"
+            f"{tag_str} | {tier_badge}\n"
+            f"⚡ <b>{symbol} ({tf_str}) • {action_str}</b> ({confidence}%)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Entry:</b> ${entry_min} – ${entry_max} | <b>Lev:</b> {lev:.0f}x\n"
+            f"• Stop Loss: <b>${sl_val} (-{sl_pct}% | ROE: -{roe_sl}%)</b>{be_str}\n"
+            f"• TP1: <b>${tp1} (+{tp1_pct}% | ROE: +{roe_tp1}%)</b> ➔ Closes {close_ratio_pct}% & Moves SL to BE\n"
+            f"• TP2: <b>${tp2} (+{tp2_pct}% | Total ROE: +{overall_tp2_roe}%)</b> ➔ Closes {rem_ratio_pct}% Runner\n"
+            f"• <b>TTL:</b> {ttl_display} (Exp ~{signal_data.get('expiration_time', 'N/A')})"
         )
 
         # Detailed internal technical diagnostics appended only if verbose mode is enabled

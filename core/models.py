@@ -84,10 +84,16 @@ class SignalData(BaseModel):
     """Institutional Trade Signal Data Payload."""
     model_config = ConfigDict(extra='ignore')
     
+    open: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    upper_wick_ratio: float = 0.0
+    lower_wick_ratio: float = 0.0
     timestamp: str
     symbol: str = ""
     timeframe: str
     htf_trend: str
+    htf_1h_trend: str = "Unknown"
     htf_4h_trend: str = "Unknown"
     btc_trend: str
     close: float
@@ -130,6 +136,8 @@ class SignalData(BaseModel):
     reversal_notice: str = ""
     liquidity_magnets: List[Dict[str, Any]] = Field(default_factory=list)
     rsi_val: float = 50.0
+    rsi_14: float = 50.0
+    adx_14: float = 25.0
     volume_ratio: float = 1.0
     volume_usd: float = 0.0
     dynamic_level_reaction: bool = False

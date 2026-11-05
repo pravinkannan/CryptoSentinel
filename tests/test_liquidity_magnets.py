@@ -8,9 +8,9 @@ from notifications.notifier import NotificationService
 
 
 def test_min_dispatch_confidence_configuration():
-    """Verify that min dispatch confidence is set to 86% and VIP to 92%."""
-    assert settings.min_dispatch_confidence == 86.0
-    assert settings.vip_confidence_threshold == 92.0
+    """Verify that min dispatch confidence is set to 85.5% and VIP to 89.0%."""
+    assert settings.min_dispatch_confidence == 85.5
+    assert settings.vip_confidence_threshold == 89.0
 
 
 def test_scan_liquidity_magnets():
@@ -116,7 +116,7 @@ def test_notify_signal_clean_compact_by_default():
             assert "8x" in msg
             assert "Stop Loss: <b>$110.06 (-1.84% | ROE: -14.72%)</b>" in msg
             assert "TP1: <b>$105.08 (+2.77% | ROE: +22.16%)</b>" in msg
-            assert "TP2: <b>$102.09 (+5.53% | Total ROE: +28.78%)</b>" in msg
+            assert "TP2: <b>$102.09 (+5.53% | Total ROE: +33.2%)</b>" in msg
 
             # Unnecessary noise / clutter omitted for users
             assert "Market Context" not in msg

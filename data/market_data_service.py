@@ -128,22 +128,28 @@ class MarketDataService:
             )
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.5, min=1, max=3), reraise=True)
-    async def _fetch_ohlcv_with_retry(self, symbol: str, timeframe: str, limit: int):
+    async def _fetch_ohlcv_with_retry(self, symbol: str, timeframe: str, limit: int, since: Optional[int] = None):
         curr_ex = self.exchange
         try:
+            if since is not None:
+                return await curr_ex.fetch_ohlcv(symbol, timeframe, limit=limit, since=since)
             return await curr_ex.fetch_ohlcv(symbol, timeframe, limit=limit)
         except ccxt.BadSymbol:
             if '/' in symbol and ':' not in symbol:
                 future_symbol = f"{symbol}:{symbol.split('/')[1]}"
+                if since is not None:
+                    return await curr_ex.fetch_ohlcv(future_symbol, timeframe, limit=limit, since=since)
                 return await curr_ex.fetch_ohlcv(future_symbol, timeframe, limit=limit)
             raise
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 250) -> Optional[pd.DataFrame]:
+    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 250, since: Optional[int] = None) -> Optional[pd.DataFrame]:
         """Fetch OHLCV data and convert to pandas DataFrame with sticky multi-exchange failover."""
         await self._maybe_probe_primary()
         for attempt in range(len(self.exchange_pool)):
             try:
-                ohlcv = await self._fetch_ohlcv_with_retry(symbol, timeframe, limit)
+                ohlcv = await self._fetch_ohlcv_with_retry(symbol, timeframe, limit, since=since)
+                if not ohlcv:
+                    return pd.DataFrame()
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 return df

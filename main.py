@@ -9,6 +9,10 @@ from engine.portfolio_manager import PortfolioManager; from notifications.notifi
 from infrastructure.database.repository import SentinelRepository; from application.pipeline.pipeline import SignalPipeline, SignalContext
 from application.pipeline.steps import (MarketDataIngestionStep, PatternRecognitionStep, ConfluenceEvaluationStep, RiskAndPositionSizingStep, ExecutionDispatchStep)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 class CryptoSentinelApp:
@@ -30,17 +34,14 @@ class CryptoSentinelApp:
         self.event_bus.subscribe(TradeClosedEvent, self.repository.on_trade_closed); self.event_bus.subscribe(TradeClosedEvent, self._handle_trade_closed)
 
     def build_pipeline(self) -> SignalPipeline:
-        rm = getattr(self, 'risk_manager', getattr(self.signal_generator, 'risk_manager', None))
-        repo_db = getattr(self.repository, 'db_path', None)
-        pt_db = getattr(self.paper_trader, 'db_path', None)
-        if not (isinstance(repo_db, str) and repo_db != 'data/sentinel.db'):
-            self.repository.db_path = pt_db if isinstance(pt_db, str) else 'data/sentinel.db'
+        if hasattr(self, 'paper_trader') and hasattr(self.paper_trader, 'db_path'):
+            self.repository.db_path = self.paper_trader.db_path
         self.repository.state_manager = self.state_manager
         return SignalPipeline([
             MarketDataIngestionStep(self.market_data, self.regime_detector, self.portfolio_manager, self.paper_trader, self.signal_generator, self.state_manager, self.journal_manager, self.notifier, self.ai_evaluator),
             PatternRecognitionStep(self.signal_generator, self.market_data, self.state_manager, self.notifier, self.journal_manager),
             ConfluenceEvaluationStep(self.event_bus, self.ai_evaluator, self.journal_manager, self.paper_trader, self.state_manager, self.notifier, self.repository),
-            RiskAndPositionSizingStep(rm, self.state_manager),
+            RiskAndPositionSizingStep(self.risk_manager, self.state_manager),
             ExecutionDispatchStep(self.paper_trader, self.journal_manager, self.notifier, self.event_bus, self.repository, self.state_manager)
         ])
 
@@ -57,7 +58,18 @@ class CryptoSentinelApp:
                 await self.repository.save_autopsy({**s, **rep})
             except Exception as e: logger.error(f"Autopsy worker failed for {event.trade_id}: {e}")
 
-    async def initialize(self) -> None: await self.state_manager.load_state(); await self.repository.ensure_schema(); await self.calendar_guard.sync_calendar()
+    async def initialize(self) -> None:
+        await self.state_manager.load_state()
+        await self.repository.ensure_schema()
+        await self.calendar_guard.sync_calendar()
+        if hasattr(self, 'paper_trader') and self.paper_trader:
+            await self.paper_trader.reconcile_offline_gap(
+                market_data=self.market_data,
+                journal_manager=self.journal_manager,
+                notifier=self.notifier,
+                ai_evaluator=self.ai_evaluator,
+                state_manager=self.state_manager
+            )
 
     async def execute_recon_scan(self, symbol: str) -> str:
         """Executes an ad-hoc, parallel recon scan across standard timeframes and logs confirmed setups."""
@@ -150,7 +162,8 @@ class CryptoSentinelApp:
         return "\n".join(lines)
 
     async def _process_symbol(self, symbol: str, news_data: list, circuit_breaker_active: bool, btc_trend: str) -> None:
-        for tf in settings.timeframes: await self.pipeline.execute(SignalContext(symbol=symbol, timeframe=tf, news_data=news_data, circuit_breaker_active=circuit_breaker_active, btc_trend=btc_trend))
+        target_tfs = settings.symbol_timeframes.get(symbol, settings.timeframes) if (settings.timeframes == ['5m', '15m', '1h', '4h'] and hasattr(settings, 'symbol_timeframes') and symbol in settings.symbol_timeframes) else settings.timeframes
+        for tf in target_tfs: await self.pipeline.execute(SignalContext(symbol=symbol, timeframe=tf, news_data=news_data, circuit_breaker_active=circuit_breaker_active, btc_trend=btc_trend))
 
 
     async def run_loop(self) -> None:
@@ -161,14 +174,27 @@ class CryptoSentinelApp:
                     if msg and self.notifier:
                         try: await self.notifier.send_telegram(msg)
                         except Exception as e: logger.error(f"Blackout alert error: {e}")
+                    if self.paper_trader and self.market_data:
+                        active_symbols = [s for s in settings.symbols if s not in getattr(settings, 'blacklisted_symbols', [])]
+                        for sym in active_symbols:
+                            try:
+                                df_5m = await self.market_data.fetch_ohlcv(sym, '5m', limit=50)
+                                if df_5m is not None and not df_5m.empty:
+                                    await self.paper_trader.update_trades(
+                                        sym, df_5m, self.journal_manager, self.notifier, self.ai_evaluator, self.market_data, self.state_manager
+                                    )
+                            except Exception as ex:
+                                logger.debug(f"Trade update error during blackout for {sym}: {ex}")
                     await asyncio.sleep(60); continue
-                cb = (await self.paper_trader.get_current_drawdown() > settings.max_drawdown_percent) if getattr(settings, 'enable_circuit_breaker', True) else False
+                cb = (await self.paper_trader.get_current_drawdown() > settings.max_drawdown_percent) if settings.enable_circuit_breaker else False
                 if cb: logger.warning("CIRCUIT BREAKER TRIGGERED: Drawdown exceeds threshold. Halting new signals.")
-                logger.info(f"Starting market scan cycle for {len(settings.symbols)} symbols...")
+                active_symbols = [s for s in settings.symbols if s not in getattr(settings, 'blacklisted_symbols', [])]
+                bl_info = f" (blacklisted: {settings.blacklisted_symbols})" if getattr(settings, 'blacklisted_symbols', None) else ""
+                logger.info(f"Starting market scan cycle for {len(active_symbols)} symbols ({', '.join(active_symbols)}){bl_info}...")
                 news = await self.news_aggregator.get_latest_news(limit=5)
                 btc_df = await self.market_data.fetch_ohlcv('BTC/USDT', '1h', limit=250)
                 btc_trend = self.signal_generator.get_htf_trend(btc_df) if btc_df is not None else "Unknown"
-                for sym in settings.symbols: await self._process_symbol(sym, news, cb, btc_trend)
+                for sym in active_symbols: await self._process_symbol(sym, news, cb, btc_trend)
                 await self.state_manager.save_state(self.news_aggregator.seen_guids, self.state_manager.state.get("last_crossed_alerts", {}))
                 logger.info(f"Scan cycle complete. Sleeping for {settings.poll_interval_minutes} minutes...")
                 await asyncio.sleep(settings.poll_interval_minutes * 60)

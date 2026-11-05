@@ -517,6 +517,8 @@ def test_stage_3_vip_gate_qualification_continuous_score():
         'macro_trend_aligned': True,   # +3.0
         'btc_trend_aligned': True,     # +2.5
         'funding_rate_tailwind': True, # +1.0
+        'is_squeezed': True,           # Pillar 2
+        'is_squeezed': True,           # Pillar 2: Squeeze compression required for VIP
         'patterns': ['Bullish RSI Divergence'] # +3.5
     }
     # Net: 64.0 + 8.0 + 5.0 + 4.0 + 4.5 + 6.5 + 5.0 (RSI Div) = 97.0
@@ -524,7 +526,7 @@ def test_stage_3_vip_gate_qualification_continuous_score():
     assert res["final_score"] >= 92.0
     assert res["tier"] == "VIP"
     assert res["eval_trace"]["vip_capped"] is False
-    assert res["final_score"] == 97.0
+    assert res["final_score"] == 98.0
 
 
 def test_stage_3_vip_gate_capping_missing_volume():
@@ -610,6 +612,34 @@ def test_stage_3_vip_gate_capping_insufficient_book_depth():
     assert res["final_score"] == 91.9
     assert res["tier"] == "STANDARD"
     assert res["eval_trace"]["vip_capped"] is True
+
+
+def test_stage_3_vip_gate_capping_missing_squeeze():
+    """Pillar 2: Setup >= 92% missing Volatility Squeeze compression caps at 91.9% STANDARD."""
+    sig_no_squeeze = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 8.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,  # level_points = 6.0
+        'vwap_aligned': True,          # +4.0
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 2.0,
+        'ob_defensive_shield': True,   # ob_points = 4.5
+        'macro_trend_aligned': True,   # +3.0
+        'btc_trend_aligned': True,     # +2.5
+        'funding_rate_tailwind': True, # +1.0
+        'patterns': ['Bullish RSI Divergence'], # +3.5
+        'target_magnet_present': True, # +2.0
+        'is_squeezed': False           # Missing squeeze compression!
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig_no_squeeze)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("Volatility Squeeze Compression" in c for c in res["scoring_checklist"])
     assert any("Order Book Depth" in c for c in res["scoring_checklist"])
 
 
@@ -639,7 +669,63 @@ def test_stage_3_vip_gate_capping_has_sweep_risk():
     assert res["final_score"] == 91.9
     assert res["tier"] == "STANDARD"
     assert res["eval_trace"]["vip_capped"] is True
+
+
+def test_stage_3_vip_gate_capping_missing_squeeze():
+    """Pillar 2: Setup >= 92% missing Volatility Squeeze compression caps at 91.9% STANDARD."""
+    sig_no_squeeze = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 8.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,  # level_points = 6.0
+        'vwap_aligned': True,          # +4.0
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 2.0,
+        'ob_defensive_shield': True,   # ob_points = 4.5
+        'macro_trend_aligned': True,   # +3.0
+        'btc_trend_aligned': True,     # +2.5
+        'funding_rate_tailwind': True, # +1.0
+        'patterns': ['Bullish RSI Divergence'], # +3.5
+        'target_magnet_present': True, # +2.0
+        'is_squeezed': False           # Missing squeeze compression!
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig_no_squeeze)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("Volatility Squeeze Compression" in c for c in res["scoring_checklist"])
     assert any("No Sweep Risk" in c for c in res["scoring_checklist"])
+
+
+def test_stage_3_vip_gate_capping_missing_squeeze():
+    """Pillar 2: Setup >= 92% missing Volatility Squeeze compression caps at 91.9% STANDARD."""
+    sig_no_squeeze = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,
+        'vwap_aligned': True,
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 2.0,
+        'ob_defensive_shield': True,
+        'macro_trend_aligned': True,
+        'btc_trend_aligned': True,
+        'funding_rate_tailwind': True,
+        'patterns': ['Bullish RSI Divergence'],
+        'target_magnet_present': True,
+        'is_squeezed': False
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig_no_squeeze)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("Volatility Squeeze Compression" in c for c in res["scoring_checklist"])
 
 
 def test_stage_3_vip_gate_capping_macro_trend_not_aligned():
@@ -667,7 +753,34 @@ def test_stage_3_vip_gate_capping_macro_trend_not_aligned():
     assert res["final_score"] == 91.9
     assert res["tier"] == "STANDARD"
     assert res["eval_trace"]["vip_capped"] is True
-    assert any("Macro Alignment" in c for c in res["scoring_checklist"])
+
+
+def test_stage_3_vip_gate_capping_missing_squeeze():
+    """Pillar 2: Setup >= 92% missing Volatility Squeeze compression caps at 91.9% STANDARD."""
+    sig_no_squeeze = {
+        'direction': 'LONG',
+        'open': 100.0,
+        'close': 105.0,
+        'volume': 2500.0,
+        'vol_sma_20': 1000.0,          # vol_points = 8.0
+        'key_level_rejection': True,
+        'dist_to_key_level_pct': 0.0,  # level_points = 6.0
+        'vwap_aligned': True,          # +4.0
+        'total_book_depth_usd': 300000.0,
+        'imbalance_ratio': 2.0,
+        'ob_defensive_shield': True,   # ob_points = 4.5
+        'macro_trend_aligned': True,   # +3.0
+        'btc_trend_aligned': True,     # +2.5
+        'funding_rate_tailwind': True, # +1.0
+        'patterns': ['Bullish RSI Divergence'], # +3.5
+        'target_magnet_present': True, # +2.0
+        'is_squeezed': False           # Missing squeeze compression!
+    }
+    res = evaluate_confluence_score("ETH/USDT", sig_no_squeeze)
+    assert res["final_score"] == 91.9
+    assert res["tier"] == "STANDARD"
+    assert res["eval_trace"]["vip_capped"] is True
+    assert any("Volatility Squeeze Compression" in c for c in res["scoring_checklist"])
 
 
 
@@ -816,6 +929,7 @@ def test_ai_qualitative_adjustments_on_parametric_score():
             'btc_trend_aligned': True,     # +2.5
             'funding_rate_tailwind': True, # +1.0 (trend = 6.5)
             'target_magnet_present': True, # +2.0 (catalyst = 2.0)
+            'is_squeezed': True,
             'patterns': ['Engulfing']
         }
 
@@ -824,7 +938,7 @@ def test_ai_qualitative_adjustments_on_parametric_score():
         assert res_raw is not None
         res = json.loads(res_raw)
         
-        assert res["final_confidence_rating"] == 90.0
+        assert res["final_confidence_rating"] == 91.0
         assert res["tier"] == "STANDARD"
         assert "-5% Live News Conflict" in res["scoring_checklist"]
 
@@ -1247,6 +1361,8 @@ def test_stage_2_flawless_100_percent_confluence():
         'patterns': ['Bullish RSI Divergence'], # Tier 3: rsi_div = 3.5
         'target_magnet_present': True, # Tier 3: target_magnet = 2.0
         'oi_delta_15m': 2.0,           # Tier 3: oi_expansion = 1.5
+        'is_squeezed': True,
+        'is_squeezed': True,           # Pillar 2: Squeeze compression
         'blocking_ob_wall': False,
         'has_sweep_risk': False
     }

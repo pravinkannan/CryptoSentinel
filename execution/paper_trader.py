@@ -4,7 +4,7 @@ PaperTradingService manages simulated futures positions via SQLite in the unifie
 
 import logging
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 import pandas as pd
 from core.db import get_db_connection
@@ -19,11 +19,11 @@ class PaperTradingService:
     
     def __init__(
         self, 
-        db_path: str = "data/sentinel.db", 
+        db_path: Optional[str] = None, 
         initial_capital: float = 10000.0,
         event_bus: Optional[EventBus] = None
     ) -> None:
-        self.db_path: str = db_path
+        self.db_path: str = db_path if db_path is not None else getattr(settings, 'db_path', "data/sentinel.db")
         self.initial_capital: float = initial_capital
         self.event_bus: Optional[EventBus] = event_bus if event_bus is not None else get_event_bus()
         
@@ -51,6 +51,7 @@ class PaperTradingService:
         TAKER_FEE_RATE = 0.0005
         DEFAULT_SLIPPAGE_PCT = 0.0003
         
+        events_to_publish: List[TradeClosedEvent] = []
         try:
             async with get_db_connection(self.db_path) as conn:
                 cursor = await conn.execute('''
@@ -70,16 +71,18 @@ class PaperTradingService:
                     status, exit_price = 'PENDING', 0.0
 
                     initial_risk = abs(entry - sl)
-                    be_r_ratio = getattr(settings, 'breakeven_trigger_r_ratio', 1.0)
-                    close_ratio = getattr(settings, 'tp1_close_ratio', 0.70)
+                    is_commodity = any(c in symbol for c in ["XAU", "PAXG", "GOLD"])
+                    be_r_ratio = getattr(settings, 'be_trigger_rr_ratio_commodity', 0.30) if is_commodity else getattr(settings, 'be_trigger_rr_ratio', 0.50)
+                    close_ratio = getattr(settings, 'tp1_close_ratio', 0.50)
                     rem_ratio = 1.0 - close_ratio
 
+                    TRUE_BE_BUFFER = 0.00276  # Pillar 4: Fee + slippage buffer
                     if direction.upper() == 'LONG':
                         be_trigger = entry + (initial_risk * be_r_ratio)
-                        be_sl_price = round(entry * 1.001, 2)
+                        be_sl_price = round(entry * (1.0 + TRUE_BE_BUFFER), 4 if entry < 10 else 2)
                     else:
                         be_trigger = entry - (initial_risk * be_r_ratio)
-                        be_sl_price = round(entry * 0.999, 2)
+                        be_sl_price = round(entry * (1.0 - TRUE_BE_BUFFER), 4 if entry < 10 else 2)
 
                     already_be = (trailing_sl is not None) and (
                         (direction.upper() == 'LONG' and float(trailing_sl) >= be_sl_price) or
@@ -126,7 +129,10 @@ class PaperTradingService:
                     fee_drag = (TAKER_FEE_RATE * 2 + DEFAULT_SLIPPAGE_PCT) * lev * 100
                     exit_candle = eval_df.iloc[-1]
                     
+                    candle_count = 0
+                    max_bars = getattr(settings, 'momentum_decay_bars', 8)
                     for _, candle in eval_df.iterrows():
+                        candle_count += 1
                         c_high = float(candle['high'])
                         c_low = float(candle['low'])
                         c_close = float(candle['close'])
@@ -153,6 +159,9 @@ class PaperTradingService:
                                 logger.info(f"Trade {trade_id} for {symbol} expired after {ttl_mins} mins. Closing at market ({c_close}).")
                                 break
                                 
+                        # Natural trade lifecycle to TP1, TP2, BE, or TTL
+                        pass
+
                         current_mae = 0.0
                         current_mfe = 0.0
                         
@@ -278,17 +287,24 @@ class PaperTradingService:
                         elif status == 'WIN_TP2':
                             gross_pnl_pct = (close_ratio * tp1_gain_pct + rem_ratio * tp2_gain_pct) * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
-                        elif status == 'EXPIRED':
+                        elif status in ['EXPIRED', 'MOMENTUM_DECAY']:
                             pct_move = (exit_price - entry) / entry if direction.upper() == 'LONG' else (entry - exit_price) / entry
                             gross_pnl_pct = pct_move * lev * 100
                             net_pnl_pct = gross_pnl_pct - fee_drag
-                            status = 'EXPIRED_PROFIT' if net_pnl_pct > 0 else 'EXPIRED_LOSS'
+                            if status == 'EXPIRED':
+                                status = 'EXPIRED_PROFIT' if net_pnl_pct > 0 else 'EXPIRED_LOSS'
+                            else:
+                                status = 'MOMENTUM_DECAY_PROFIT' if net_pnl_pct > 0 else 'MOMENTUM_DECAY_LOSS'
                         
-                        await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
+                        now_close_iso = datetime.now(timezone.utc).isoformat()
+                        try:
+                            await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ?, close_time = ? WHERE trade_id = ?', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, now_close_iso, trade_id))
+                        except Exception:
+                            await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (status, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                         logger.info(f"Paper trade closed: {trade_id} {symbol} -> {status} with Net PnL {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%) (MAE: {mae:.2f}%, MFE: {mfe:.2f}%)")
 
-                        # Emit TradeClosedEvent to Event Bus (Phase 2 Decoupled Architecture)
+                        # Buffer TradeClosedEvent to publish after DB commit to prevent database lock contention
                         if self.event_bus:
                             exit_candle_dict = None
                             if exit_candle is not None:
@@ -319,7 +335,7 @@ class PaperTradingService:
                                 mfe_pct=mfe,
                                 exit_candle=exit_candle_dict
                             )
-                            await self.event_bus.publish(closed_event)
+                            events_to_publish.append(closed_event)
 
                         # Evict closed trade from active_signals state immediately so it no longer blocks future setups
                         if state_manager and hasattr(state_manager, 'state') and isinstance(state_manager.state.get("active_signals"), dict):
@@ -332,35 +348,17 @@ class PaperTradingService:
                                 del active_sigs[k]
                                 logger.info(f"Evicted closed trade {trade_id} ({k}) from active_signals state (Outcome: {status}).")
 
-                        # Trigger Post-Trade Forensic Autopsy on LOSS
-                        if status == 'LOSS' and journal_manager is not None and ai_evaluator is not None:
-                            try:
-                                trade_summary = {
-                                    'trade_id': str(trade_id),
-                                    'symbol': symbol,
-                                    'direction': direction,
-                                    'entry_price': entry,
-                                    'sl_price': exit_price,
-                                    'leverage': lev,
-                                    'net_pnl_pct': net_pnl_pct
-                                }
-                                sl_candle = {
-                                    'open': float(exit_candle['open']) if 'open' in exit_candle else float(exit_candle['close']),
-                                    'high': float(exit_candle['high']),
-                                    'low': float(exit_candle['low']),
-                                    'close': float(exit_candle['close']),
-                                    'volume': float(exit_candle['volume']) if 'volume' in exit_candle else 0.0
-                                }
-                                asyncio.create_task(
-                                    self._trigger_autopsy(trade_summary, sl_candle, journal_manager, ai_evaluator, market_data, symbol)
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to initiate autopsy task for {trade_id}: {e}")
-                        
                     else:
                         await conn.execute('UPDATE trades SET tp1_hit = ?, trailing_sl = ? WHERE trade_id = ?', (tp1_hit, current_sl, trade_id))
                         await conn.execute('UPDATE evaluations SET mae_pct = ?, mfe_pct = ? WHERE trade_id = ?', (mae, mfe, trade_id))
                 await conn.commit()
+
+            # Publish all closed trade events after DB transaction is committed and closed
+            for event in events_to_publish:
+                try:
+                    await self.event_bus.publish(event)
+                except Exception as e:
+                    logger.error(f"Failed to publish TradeClosedEvent for {event.trade_id}: {e}")
         except Exception as e:
             logger.error(f"Failed to update trades: {e}")
 
@@ -441,24 +439,56 @@ class PaperTradingService:
             logger.error(f"Failed to move SL to BE for trade {trade_id}: {e}")
 
     async def get_current_drawdown(self) -> float:
-        """Calculate maximum capital drawdown across completed trades."""
+        """
+        Calculate current peak-to-trough equity drawdown across completed trades,
+        chronologically sorted by close_time (or timestamp) with dynamic position sizing.
+        """
         try:
             async with get_db_connection(self.db_path) as conn:
-                cursor = await conn.execute('SELECT pnl_pct FROM trades WHERE status != "PENDING" AND status != "REJECTED" AND status != "SHADOW"')
+                cursor = await conn.execute('''
+                    SELECT 
+                        COALESCE(net_pnl_pct, pnl_pct, 0.0), 
+                        COALESCE(leverage, 1.0), 
+                        COALESCE(entry_price, 0.0), 
+                        COALESCE(sl_price, 0.0)
+                    FROM trades 
+                    WHERE status NOT IN ('PENDING', 'REJECTED', 'SHADOW')
+                    ORDER BY COALESCE(close_time, timestamp) ASC
+                ''')
                 trades = await cursor.fetchall()
                 
-                if not trades: return 0.0
+                if not trades:
+                    return 0.0
                     
                 capital = self.initial_capital
                 peak = capital
+                risk_pct = getattr(settings, 'risk_per_trade_percent', 2.0)
+                default_pos_pct = getattr(settings, 'position_size_percent', 10.0)
                 
-                for trade in trades:
-                    pnl_pct = trade[0]
-                    profit = (capital * 0.01) * (pnl_pct / 100.0)
-                    capital += profit
-                    if capital > peak: peak = capital
+                for row in trades:
+                    return_pct = float(row[0] or 0.0)
+                    leverage = max(1.0, float(row[1] or 1.0))
+                    entry = float(row[2] or 0.0)
+                    sl = float(row[3] or 0.0)
+                    
+                    if entry > 0 and sl > 0 and abs(entry - sl) > 0:
+                        sl_distance_pct = abs(entry - sl) / entry
+                        loss_at_sl = sl_distance_pct * leverage
+                        if loss_at_sl > 0:
+                            risk_dollars = capital * (risk_pct / 100.0)
+                            margin_allocated = min(capital * 0.5, risk_dollars / loss_at_sl)
+                        else:
+                            margin_allocated = capital * (default_pos_pct / 100.0)
+                    else:
+                        margin_allocated = capital * (default_pos_pct / 100.0)
                         
-                if peak == 0: return 0.0
+                    profit = margin_allocated * (return_pct / 100.0)
+                    capital = max(0.0, capital + profit)
+                    if capital > peak:
+                        peak = capital
+                        
+                if peak <= 0:
+                    return 0.0
                 return max(0.0, ((peak - capital) / peak) * 100.0)
         except Exception as e:
             logger.error(f"Failed to calculate drawdown: {e}")
@@ -480,7 +510,11 @@ class PaperTradingService:
                     gross_pnl_pct = pct_move * lev * 100
                     net_pnl_pct = gross_pnl_pct - fee_drag
                     
-                    await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (reason, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
+                    now_close_iso = datetime.now(timezone.utc).isoformat()
+                    try:
+                        await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ?, close_time = ? WHERE trade_id = ?', (reason, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, now_close_iso, trade_id))
+                    except Exception:
+                        await conn.execute('UPDATE trades SET status = ?, exit_price = ?, pnl_pct = ?, net_pnl_pct = ?, gross_pnl_pct = ? WHERE trade_id = ?', (reason, exit_price, net_pnl_pct, net_pnl_pct, gross_pnl_pct, trade_id))
                     await conn.commit()
                     logger.info(f"Position {trade_id} forcefully closed at {exit_price} ({reason}). Net PnL: {net_pnl_pct:.2f}% (Gross: {gross_pnl_pct:.2f}%)")
 
@@ -522,4 +556,120 @@ class PaperTradingService:
             logger.info(f"Post-trade autopsy saved for trade {trade_summary['trade_id']}: {autopsy_report.get('failure_category')}")
         except Exception as e:
             logger.error(f"Error executing autopsy task for trade {trade_summary.get('trade_id')}: {e}")
+
+    async def reconcile_offline_gap(
+        self,
+        market_data: Any,
+        journal_manager: Any = None,
+        notifier: Any = None,
+        ai_evaluator: Any = None,
+        state_manager: Any = None
+    ) -> Dict[str, Any]:
+        """
+        Reconciles pending trades across an offline polling gap.
+        When Sentinel boots up after being offline, fetches missing historical candles
+        since each trade's entry and replays them through update_trades so Stop Losses,
+        Take Profits, and TTL expirations resolve accurately at their historical price
+        instead of lagging or teleporting to today's price.
+        """
+        reconciled_count = 0
+        closed_count = 0
+        still_pending_count = 0
+
+        try:
+            async with get_db_connection(self.db_path) as conn:
+                cursor = await conn.execute('''
+                    SELECT trade_id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, leverage, timestamp, ttl_mins
+                    FROM trades
+                    WHERE status = 'PENDING'
+                    ORDER BY COALESCE(timestamp, '') ASC
+                ''')
+                pending_trades = await cursor.fetchall()
+
+            if not pending_trades:
+                logger.info("🛡️ [RECONCILIATION] No pending trades found to reconcile across offline gap.")
+                return {
+                    "status": "CLEAN",
+                    "total_checked": 0,
+                    "closed": 0,
+                    "active": 0
+                }
+
+            logger.info(f"🔄 [RECONCILIATION] Auditing {len(pending_trades)} pending trade(s) for offline gap catch-up...")
+            now_utc = datetime.now(timezone.utc)
+
+            for trade in pending_trades:
+                trade_id, symbol, direction, entry, sl, tp1, tp2, lev, ts_str, ttl_mins = trade
+                ttl_mins = float(ttl_mins or getattr(settings, 'trade_ttl_minutes', 1080))
+                
+                try:
+                    trade_time = datetime.fromisoformat(str(ts_str).replace(' UTC', '+00:00'))
+                    if trade_time.tzinfo is None:
+                        trade_time = trade_time.replace(tzinfo=timezone.utc)
+                except Exception:
+                    trade_time = now_utc
+
+                gap_seconds = (now_utc - trade_time).total_seconds()
+                gap_mins = gap_seconds / 60.0
+
+                # If the trade is very fresh (< 10 mins), normal cycle handles it
+                if gap_mins < 10.0:
+                    still_pending_count += 1
+                    continue
+
+                reconciled_count += 1
+                sym_tfs = settings.symbol_timeframes.get(symbol, settings.timeframes) if (hasattr(settings, 'symbol_timeframes') and symbol in settings.symbol_timeframes) else getattr(settings, 'timeframes', ['5m'])
+                base_tf = sym_tfs[0] if sym_tfs else '5m'
+
+                df_catchup = None
+                if market_data:
+                    since_ms = int(trade_time.timestamp() * 1000)
+                    try:
+                        # Fetch up to 1000 candles starting from trade entry
+                        df_catchup = await market_data.fetch_ohlcv(symbol, base_tf, limit=1000, since=since_ms)
+                    except Exception as ex:
+                        logger.warning(f"Failed to fetch catch-up candles for {symbol} ({trade_id}): {ex}")
+
+                if df_catchup is not None and not df_catchup.empty:
+                    logger.info(f"🔄 [RECONCILIATION] Replaying {len(df_catchup)} {base_tf} candles for {symbol} ({trade_id}) to bridge {gap_mins:.1f}m offline gap...")
+                    await self.update_trades(
+                        symbol=symbol,
+                        df_5m=df_catchup,
+                        journal_manager=journal_manager,
+                        notifier=notifier,
+                        ai_evaluator=ai_evaluator,
+                        market_data=market_data,
+                        state_manager=state_manager
+                    )
+                else:
+                    # If exchange data could not be retrieved and trade exceeded TTL, close as EXPIRED
+                    if gap_mins > ttl_mins:
+                        logger.warning(f"⚠️ [RECONCILIATION] Trade {trade_id} exceeded TTL ({ttl_mins}m) during offline gap ({gap_mins:.1f}m) with no candle data. Closing as EXPIRED.")
+                        await self.close_position(trade_id, exit_price=float(entry or 0.0), reason="EXPIRED_OFFLINE")
+                        if state_manager and "active_signals" in state_manager.state:
+                            state_manager.state["active_signals"] = {
+                                k: v for k, v in state_manager.state["active_signals"].items()
+                                if v.get("trade_id") != trade_id
+                            }
+                            await state_manager.save_state()
+
+                # Check if it was closed during reconciliation
+                is_still_active = await self.is_trade_active(symbol, trade_id=trade_id)
+                if is_still_active:
+                    still_pending_count += 1
+                else:
+                    closed_count += 1
+
+            logger.info(f"✅ [RECONCILIATION] Offline gap reconciliation finished: {closed_count} closed, {still_pending_count} active.")
+            return {
+                "status": "RECONCILED",
+                "total_checked": len(pending_trades),
+                "reconciled": reconciled_count,
+                "closed": closed_count,
+                "active": still_pending_count
+            }
+
+        except Exception as e:
+            logger.error(f"❌ [RECONCILIATION] Error during offline reconciliation: {e}", exc_info=True)
+            return {"status": "ERROR", "error": str(e)}
 
