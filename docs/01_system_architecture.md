@@ -36,7 +36,7 @@ graph TD
         MATH[Pure Confluence Engine]
         STAGE1[Stage 1: Binary Circuit Breakers]
         STAGE2[Stage 2: Parametric Scoring Curves]
-        STAGE3[Stage 3: 5-Pillar VIP Gate & Ghost Scoring]
+        STAGE3[Stage 3: 5-Pillar PREMIUM Gate & Ghost Scoring]
     end
 
     CCXT --> STEP1

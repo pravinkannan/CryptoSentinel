@@ -76,7 +76,7 @@ def test_intra_candle_tp1_and_tp2_ratcheting():
         trade_id="BTC_TEST_002",
         symbol="BTC/USDT",
         direction="LONG",
-        tier="VIP",
+        tier="PREMIUM",
         entry_price=100.0,
         sl_price=95.0,
         tp1_price=110.0,

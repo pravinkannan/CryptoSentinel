@@ -72,6 +72,7 @@ class EvalTrace(BaseModel):
     net_score: float = 64.0
     final_score: float = 64.0
     tier: str = "REJECTED"
+    premium_capped: bool = False
     vip_capped: bool = False
     has_sweep_risk: bool = False
     macro_trend_aligned: bool = False

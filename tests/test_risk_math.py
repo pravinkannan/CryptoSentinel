@@ -221,7 +221,7 @@ def test_recalibrate_for_tier_vip_sniper():
     }
 
     recal = rm.recalibrate_for_tier(signal_data, is_vip=True)
-    assert recal['setup_type'] == "VIP_SNIPER"
+    assert recal['setup_type'] in ["PREMIUM_SNIPER", "VIP_SNIPER"]
     assert recal['leverage_val'] >= 45.0
     assert recal['leverage_val'] <= 60.0
     assert recal['roe_tp1'] >= 80.0
@@ -244,7 +244,7 @@ def test_recalibrate_for_tier_vip_swing_altcoin():
     }
 
     recal = rm.recalibrate_for_tier(signal_data, is_vip=True)
-    assert recal['setup_type'] == "VIP_SWING"
+    assert recal['setup_type'] in ["PREMIUM_SWING", "VIP_SWING"]
     assert recal['leverage_val'] <= 20.0
     assert recal['breakeven_price'] == 102.0
 
@@ -285,7 +285,7 @@ def test_recalibrate_for_tier_vip_harmonized_15m():
     }
 
     recal = rm.recalibrate_for_tier(signal_data, is_vip=True)
-    assert recal['setup_type'] == "VIP_SWING"
+    assert recal['setup_type'] in ["PREMIUM_SWING", "VIP_SWING"]
     assert 1.20 <= recal['tp1_pct'] <= 1.80
     assert recal['tp1'] > 2500.0
     assert recal['breakeven_price'] == 2525.0
@@ -305,7 +305,7 @@ def test_recalibrate_for_tier_commodity_gold_targets():
     }
 
     recal = rm.recalibrate_for_tier(signal_data, is_vip=True)
-    assert recal['setup_type'] == "VIP_SWING"
+    assert recal['setup_type'] in ["PREMIUM_SWING", "VIP_SWING"]
     assert recal['leverage_val'] <= 25.0
     assert 0.45 <= recal['tp1_pct'] <= 0.95
     assert recal['tp1'] < 4000.0

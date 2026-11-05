@@ -24,7 +24,7 @@ Rather than relying on naive "end-to-end" Large Language Model (LLM) generation�
 |  NEURO-SYMBOLIC AI EVALUATOR                                                   v                  |
 |  Stage 1: Hard Binary Circuit Breakers (4H Trend Conflict, RSI Exhaustion, Anemic Volume)         |
 |  Stage 2: Continuous Parametric Confluence Engine (Base 68% + Continuous Mathematical Curves)      |
-|  Stage 3: 5-Pillar VIP Gate Mandate (>= 92% VIP Sniper / Swing vs 86-91.9% Standard)               |
+|  Stage 3: 5-Pillar PREMIUM Gate Mandate (>= 92% PREMIUM Sniper / Swing vs 86-91.9% Standard)               |
 |  Qualitative Audit: Gemini 2.5 Flash / Fallback Cascade (-15% to +0% News & Friction Penalty)     |
 |                                                                                |                  |
 |  MATHEMATICAL RISK GUARDRAILS                                                  v                  |
@@ -169,7 +169,7 @@ $$\text{Leverage} = \max\left(3, \min\left(\text{TierMaxLev}, \left\lfloor \frac
 
 ### 3.2 Asset-Tiered Volatility & Noise Buffers
 Empirical backtesting revealed that low-cap altcoins (e.g. PAXG, ZEC) possess wide bid-ask spreads and frequent liquidity sweeps. Applying uniform $0.65\%$ stops resulted in $0\%$ win rates due to exchange noise stopouts.
-- **Tier 1 (BTC, ETH)**: Deep order book depth ($\ge \$250\text{k}$). Enforces minimum SL floor of $0.90\%$ (or $0.65\%$ for VIP Snipers) with $1.2\times$ ATR buffer.
+- **Tier 1 (BTC, ETH)**: Deep order book depth ($\ge \$250\text{k}$). Enforces minimum SL floor of $0.90\%$ (or $0.65\%$ for PREMIUM Snipers) with $1.2\times$ ATR buffer.
 - **Tier 2 (SOL, ZEC, PAXG)**: Thinner book depth. Enforces minimum SL floor of $1.50\%$ with $1.6\times$ ATR multiplier and caps maximum leverage at $12x - 20x$.
 
 ### 3.3 Anti-Sweep Resting Pool Anchoring
@@ -179,8 +179,8 @@ This ensures retail stop-hunting sweeps bounce off the order wall without termin
 
 ### 3.4 Commercial Dual-Engine Monetization Tiers
 To monetize signals, Sentinel bifurcates trades into distinct risk profiles:
-- **👑 VIP Sniper (`VIP_SNIPER`)**: Exclusive to BTC/ETH on 5m/15m with a confirmed institutional defensive shield ($\ge \$250\text{k}$). Exploits 50x–60x leverage with tight $0.75\%$ SL designed for $+80\%$ to $+100\%$ ROE at TP1.
-- **👑 VIP Macro Swing (`VIP_SWING`)**: Calibrated 20x–25x leverage on 1H trend expansion.
+- **👑 PREMIUM Sniper (`PREMIUM_SNIPER`)**: Exclusive to BTC/ETH on 5m/15m with a confirmed institutional defensive shield ($\ge \$250\text{k}$). Exploits 50x–60x leverage with tight $0.75\%$ SL designed for $+80\%$ to $+100\%$ ROE at TP1.
+- **👑 PREMIUM Macro Swing (`PREMIUM_SWING`)**: Calibrated 20x–25x leverage on 1H trend expansion.
 - **🔹 Standard Tier (`STANDARD_SWING`)**: $86.0\% - 91.9\%$ confidence setups with asset-tiered leverage (20x-25x on majors, 10x-12x on alts), **Auto-Breakeven at 1.0R**, and **70% partial close at TP1**.
 
 ---
@@ -271,7 +271,7 @@ When the chronological candle evaluator in `PaperTradingService` detects that a 
 * **Action**: I re-architected the scoring subsystem into a **Two-Stage Parametric Engine** (`engine/ai_evaluator.py`). 
   1. I introduced **Stage 1 Hard Binary Circuit Breakers** to instantly kill setups opposing 4H macro trends or displaying RSI momentum exhaustion before running evaluation.
   2. In Stage 2, I replaced discrete step additions with continuous parametric functions across a 3-tier orthogonal hierarchy (+36.0% max): volume was mapped to a continuous curve $\min(8.0, \max(0.0, (\text{ratio} - 1.0) \times 5.333))$ constrained to candle directional closure; key-level proximity was mapped to an inverse linear decay curve $6.0 \times (1.0 - \frac{\text{dist}}{0.30\%})$.
-  3. I introduced a calibrated base score of $64.0\%$ and a capped $-10.0\%$ friction floor to resolve signal starvation while preventing double jeopardy, and instituted a 5-Pillar VIP Gate requiring mandatory volume, structural rejection, zero sweep risk, macro alignment, and book depth $\ge \$250\text{k}$ for any score $\ge 92.0\%$.
+  3. I introduced a calibrated base score of $64.0\%$ and a capped $-10.0\%$ friction floor to resolve signal starvation while preventing double jeopardy, and instituted a 5-Pillar PREMIUM Gate requiring mandatory volume, structural rejection, zero sweep risk, macro alignment, and book depth $\ge \$250\text{k}$ for any score $\ge 92.0\%$.
 * **Result**: False positive VIP signals were reduced by $64\%$. Every signal payload now outputs an immutable `eval_trace` decimal breakdown, enabling complete mathematical transparency for audits and production debugging.
 
 ---
@@ -313,7 +313,7 @@ When the chronological candle evaluator in `PaperTradingService` detects that a 
 * **Code Quality & Testing**: Mypy (Strict Static Typing), Flake8 (PEP 8 Compliance), Pytest (189 passing test cases)
 * **Performance Metrics**:
   - **Standard Tier Win Rate Target**: $>60\%$
-  - **VIP Tier Win Rate Target**: $>80\%$
+  - **PREMIUM Tier Win Rate Target**: $>80\%$
   - **Drawdown Elimination**: $87\%$ reduction achieved by pruning signals $<86.0\%$
-  - **Target ROE (VIP Sniper)**: $+80\%$ to $+100\%$ at TP1 (Leverage up to 60x on BTC, 40x on ETH)
+  - **Target ROE (PREMIUM Sniper)**: $+80\%$ to $+100\%$ at TP1 (Leverage up to 60x on BTC, 40x on ETH)
   - **Trade TTL**: 1,080 minutes (18 hours) to bridge Asian hours into peak US session liquidity

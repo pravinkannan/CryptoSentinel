@@ -249,6 +249,7 @@ class BacktestExecutionSimulator:
                 signal_data["benchmark_macro_authority"] = True
                 signal_data["_override_squeeze_points"] = 3.5
                 signal_data["_override_catalyst_max"] = 8.0
+                signal_data["_override_premium_threshold"] = 88.0
                 signal_data["_override_vip_threshold"] = 88.0
                 signal_data["_override_standard_threshold"] = 70.0
 

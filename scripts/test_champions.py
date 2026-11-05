@@ -78,10 +78,10 @@ def run_champions():
         summary = calibrator.calibrate(trades)
 
         real_trades = [t for t in trades if t.status != "MARK_TO_MARKET"]
-        vip_trades = [t for t in real_trades if t.tier == "VIP" or t.confidence_score >= 88.0]
+        premium_trades = [t for t in real_trades if t.tier in ["PREMIUM", "VIP"] or t.confidence_score >= 88.0]
 
-        vip_wr = (sum(1 for t in vip_trades if t.net_pnl_pct > 0) / len(vip_trades) * 100) if vip_trades else 0.0
-        vip_pnl = sum(t.net_pnl_pct for t in vip_trades)
+        premium_wr = (sum(1 for t in premium_trades if t.net_pnl_pct > 0) / len(premium_trades) * 100) if premium_trades else 0.0
+        premium_pnl = sum(t.net_pnl_pct for t in premium_trades)
 
         global_wr = summary.overall_win_rate_pct
         global_pnl = summary.overall_net_pnl_pct
@@ -94,12 +94,12 @@ def run_champions():
             "global_wr": round(global_wr, 1),
             "global_pnl": round(global_pnl, 2),
             "pf": round(pf, 2),
-            "vip_trades": len(vip_trades),
-            "vip_wr": round(vip_wr, 1),
-            "vip_pnl": round(vip_pnl, 2),
+            "premium_trades": len(premium_trades),
+            "premium_wr": round(premium_wr, 1),
+            "premium_pnl": round(premium_pnl, 2),
         })
 
-        print(f"[*] {sym:<10} {tf:<4} | Trades: {len(real_trades):<3} | WR: {global_wr:>5.1f}% | Net PnL: {global_pnl:>+8.2f}% | PF: {pf:>4.2f} | VIP WR: {vip_wr:>5.1f}% ({dur}s)")
+        print(f"[*] {sym:<10} {tf:<4} | Trades: {len(real_trades):<3} | WR: {global_wr:>5.1f}% | Net PnL: {global_pnl:>+8.2f}% | PF: {pf:>4.2f} | PREMIUM WR: {premium_wr:>5.1f}% ({dur}s)")
 
     print("-" * 105)
     tot_pnl = sum(r['global_pnl'] for r in results)

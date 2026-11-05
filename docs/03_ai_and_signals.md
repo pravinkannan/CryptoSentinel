@@ -82,7 +82,7 @@ Starts with `base_score = 64.0%` and computes continuous probability points acro
 `net_score = base_score + vol_points + level_points + vwap_points + ob_points + trend_tailwinds + catalyst_points + friction`  
 `final_score = round(max(0.0, min(100.0, net_score)), 1)` (Theoretical ceiling: $64.0 + 36.0 = 100.0\%$)
 
-#### Stage 3: The VIP Gate (Tier Classification)
+#### Stage 3: The PREMIUM Gate (Tier Classification)
 - **VIP Dispatch (>= 92.0%)**: To protect the >80% win rate mandate, VIP qualification strictly enforces 5 concurrent institutional requirements:
   1. `vol_points > 0.0`: Strong institutional volume surge in the trade direction.
   2. `level_points > 0.0`: Verified structural key level rejection.
@@ -92,8 +92,8 @@ Starts with `base_score = 64.0%` and computes continuous probability points acro
   *If any mandate is missing, score is strictly capped at `91.9%` (`🔹 STANDARD TIER`).*
   
   **Dual-Engine VIP Model:**
-  - **👑 VIP Sniper (`VIP_SNIPER`)**: High-leverage institutional wall setup (up to 60x on BTC, 40x on ETH) on 5m/15m leaning against resting order book shields ($\ge \$250\text{k}$) with tight $\sim 0.75\%$ SL designed for +80% to +100% ROE.
-  - **👑 VIP Macro Swing (`VIP_SWING`)**: Calibrated leverage (20x–25x on BTC/ETH, 15x–20x on Altcoins) targeting 1H trend continuation.
+  - **👑 PREMIUM Sniper (`PREMIUM_SNIPER`)**: High-leverage institutional wall setup (up to 60x on BTC, 40x on ETH) on 5m/15m leaning against resting order book shields ($\ge \$250\text{k}$) with tight $\sim 0.75\%$ SL designed for +80% to +100% ROE.
+  - **👑 PREMIUM Macro Swing (`PREMIUM_SWING`)**: Calibrated leverage (20x–25x on BTC/ETH, 15x–20x on Altcoins) targeting 1H trend continuation.
 - **Standard Dispatch (86.0% – 91.9%)**: Disciplined swing setups (`🔹 STANDARD TIER`) with asset-tiered leverage (20x–25x on BTC/ETH, 10x–12x on Altcoins), 70% profit-take at TP1, and Auto-Breakeven at 1.0R.
 - **Reject (< 86.0%)**: Discarded as low probability. Eliminates 87% of system drawdown based on empirical SQLite trade journal analytics. All exact decimal deductions and metrics are recorded in `eval_trace` for auditability.
 

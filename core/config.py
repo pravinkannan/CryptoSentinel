@@ -106,8 +106,10 @@ class Settings(BaseSettings):
     min_friction_to_target_ratio: float = Field(default=2.0, description="Pre-execution spread & tax filter: Target Distance % / Execution Tax % must be >= 4.0")
     momentum_decay_bars: int = Field(default=999, description="Max bars allowed in trade before evaluating Smart Stagnation Guard (30-40 mins on 5m)")
     stagnation_r_threshold: float = Field(default=0.15, description="Unrealized R:R threshold for stagnation filter escape velocity at bar 8")
-    vip_macro_adx_threshold: float = Field(default=25.0, description="Minimum 4H ADX trend strength for 5m/15m setups to qualify for VIP tier (> 25.0)")
-    vip_require_4h_adx_alignment: bool = Field(default=True, description="Enforce 4H ADX > 25 and +DI/-DI directional alignment for VIP tier on 5m/15m")
+    premium_macro_adx_threshold: float = Field(default=25.0, description="Minimum 4H ADX trend strength for 5m/15m setups to qualify for PREMIUM tier (> 25.0)")
+    vip_macro_adx_threshold: float = Field(default=25.0, description="Alias for premium_macro_adx_threshold")
+    premium_require_4h_adx_alignment: bool = Field(default=True, description="Enforce 4H ADX > 25 and +DI/-DI directional alignment for PREMIUM tier on 5m/15m")
+    vip_require_4h_adx_alignment: bool = Field(default=True, description="Alias for premium_require_4h_adx_alignment")
     
     sl_pct_max_high_volatility: float = Field(default=3.50, description="Max SL pct in high volatility")
     sl_pct_min_high_volatility: float = Field(default=1.0, description="Min SL pct in high volatility")
@@ -128,7 +130,8 @@ class Settings(BaseSettings):
     # Execution Friction & Live Spread Protection
     max_scalp_spread_pct: float = Field(default=0.08, description="Maximum bid-ask spread % to permit 5m/15m scalp execution (8 bps)")
     default_scalp_slippage_pct: float = Field(default=0.0010, description="Conservative slippage estimate (10 bps = 0.10%) for 5m scalps")
-    vip_confidence_threshold: float = Field(default=89.0, description="Minimum confidence score for VIP tier classification")
+    premium_confidence_threshold: float = Field(default=89.0, description="Minimum confidence score for PREMIUM tier classification")
+    vip_confidence_threshold: float = Field(default=89.0, description="Alias for premium_confidence_threshold")
     min_dispatch_confidence: float = Field(default=85.5, description="Minimum confidence score required to dispatch a signal")
     min_dispatch_confidence_reversal: float = Field(default=75.0, description="Minimum confidence score for high-confluence structural reversals (Key Level + RSI Div)")
     near_miss_min_score: float = Field(default=75.0, description="Minimum confidence score to record near-miss rejected signals in db")
@@ -141,9 +144,12 @@ class Settings(BaseSettings):
     bias_flip_min_volume_ratio: float = Field(default=2.0, description="Minimum volume surge ratio required for full bias flip")
 
     # Tiered Leverage & Execution Settings
-    vip_max_leverage_btc: float = Field(default=60.0, description="Max leverage for VIP BTC setups")
-    vip_max_leverage_eth: float = Field(default=40.0, description="Max leverage for VIP ETH setups")
-    vip_max_leverage_alt: float = Field(default=20.0, description="Max leverage for VIP Altcoin setups")
+    premium_max_leverage_btc: float = Field(default=60.0, description="Max leverage for PREMIUM BTC setups")
+    vip_max_leverage_btc: float = Field(default=60.0, description="Alias for premium_max_leverage_btc")
+    premium_max_leverage_eth: float = Field(default=40.0, description="Max leverage for PREMIUM ETH setups")
+    vip_max_leverage_eth: float = Field(default=40.0, description="Alias for premium_max_leverage_eth")
+    premium_max_leverage_alt: float = Field(default=20.0, description="Max leverage for PREMIUM Altcoin setups")
+    vip_max_leverage_alt: float = Field(default=20.0, description="Alias for premium_max_leverage_alt")
     std_max_leverage_btc_eth: float = Field(default=25.0, description="Max leverage for Standard BTC/ETH setups")
     std_max_leverage_alt: float = Field(default=12.0, description="Max leverage for Standard Altcoin setups")
     breakeven_trigger_r_ratio: float = Field(default=1.0, description="R:R gain ratio to trigger auto-breakeven")

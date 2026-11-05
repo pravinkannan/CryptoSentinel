@@ -262,8 +262,8 @@ class ConfluenceEvaluationStep:
             signal_data['_override_standard_threshold'] = getattr(settings, 'min_dispatch_confidence', 85.5)
         if '_override_reversal_threshold' not in signal_data:
             signal_data['_override_reversal_threshold'] = getattr(settings, 'min_dispatch_confidence_reversal', 75.0)
-        if '_override_vip_threshold' not in signal_data:
-            signal_data['_override_vip_threshold'] = getattr(settings, 'vip_confidence_threshold', 89.0)
+        if '_override_premium_threshold' not in signal_data:
+            signal_data['_override_premium_threshold'] = getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 89.0))
         direction_raw = str(signal_data.get('direction', 'NEUTRAL')).upper()
         is_long = direction_raw in ['LONG', 'BULLISH', 'BUY']
         is_short = direction_raw in ['SHORT', 'BEARISH', 'SELL']
@@ -453,7 +453,7 @@ class ConfluenceEvaluationStep:
                 return None
             elif final_score < bias_flip_min:
                 logger.warning(f"⚠️ Threat Defensive Mode triggered: {symbol} {tf} {direction} ({final_score}%) opposing active position. Ratcheting SL to BE.")
-                vip_thresh = float(getattr(settings, 'vip_confidence_threshold', 92.0))
+                vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 92.0)))
                 for pos in opposing_db_positions:
                     pos_tf = pos.get('timeframe', '15m')
                     pos_rank = TF_RANKS.get(pos_tf, 2)
@@ -497,7 +497,7 @@ class ConfluenceEvaluationStep:
                 return None
             else:
                 # Confirmed Bias Flip (>= 88.0%)
-                vip_thresh = float(getattr(settings, 'vip_confidence_threshold', 92.0))
+                vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 92.0)))
                 skip_flip = False
                 for opp_k, sig in opposing_state_signals:
                     sig_tf = sig.get('timeframe', opp_k.split('_')[-1])
@@ -545,8 +545,8 @@ class RiskAndPositionSizingStep:
             signal_data['_override_standard_threshold'] = getattr(settings, 'min_dispatch_confidence', 85.5)
         if '_override_reversal_threshold' not in signal_data:
             signal_data['_override_reversal_threshold'] = getattr(settings, 'min_dispatch_confidence_reversal', 75.0)
-        if '_override_vip_threshold' not in signal_data:
-            signal_data['_override_vip_threshold'] = getattr(settings, 'vip_confidence_threshold', 89.0)
+        if '_override_premium_threshold' not in signal_data:
+            signal_data['_override_premium_threshold'] = getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 89.0))
         ai_data = context.evaluated_signal
         direction = ai_data.get('trade_direction', 'NEUTRAL')
         confidence = float(ai_data.get('final_confidence_rating', 0.0))
@@ -627,8 +627,8 @@ class RiskAndPositionSizingStep:
                     logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Portfolio correlation guard: max {max_same_dir} active {direction} positions.")
                     return None
 
-        vip_thresh = float(getattr(settings, 'vip_confidence_threshold', 92.0)) if settings else 92.0
-        is_vip = (confidence >= vip_thresh)
+        vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 92.0))) if settings else 92.0
+        is_premium = is_vip = (confidence >= vip_thresh)
 
         # Live Bid-Ask Spread Gate (Institutional Protection against Scalper's Slippage Trap)
         micro = context.microstructure or {}
@@ -703,8 +703,8 @@ class ExecutionDispatchStep:
         confidence = float(ai_data.get('final_confidence_rating', 0.0))
         tier = ai_data.get('tier', 'STANDARD')
         pattern_name = signal_data.get('patterns', ['Unknown'])[0] if signal_data.get('patterns') else 'Unknown'
-        vip_thresh = float(getattr(settings, 'vip_confidence_threshold', 92.0)) if settings else 92.0
-        is_vip = (confidence >= vip_thresh)
+        vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 92.0))) if settings else 92.0
+        is_premium = is_vip = (confidence >= vip_thresh)
 
         # Invalidate opposing active signals & open paper trades if bias flip
         opposing_to_inval = context.metadata.get('opposing_to_invalidate', [])
@@ -736,7 +736,7 @@ class ExecutionDispatchStep:
                 f"🛑 <b>ACTION REQUIRED</b>: Close prior opposing positions before entering this {direction} trade!"
             )
 
-        signal_data['dispatch_channels'] = ["VIP"] if is_vip else ["STANDARD"]
+        signal_data['dispatch_channels'] = ["PREMIUM"] if (is_vip or is_premium) else ["STANDARD"]
 
         trade_dict = {
             'timestamp': signal_data.get('timestamp', context.now_utc.isoformat()),

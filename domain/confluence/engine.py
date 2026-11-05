@@ -4,7 +4,7 @@ Pure, deterministic, zero-network quantitative scoring engine for Crypto Sentine
 Includes:
 - Stage 1: Hard Binary Sanity Gate (Circuit Breakers & Ghost Scoring)
 - Stage 2: Parametric Factor Scoring (Order flow, institutional positioning, momentum catalysts, microstructure friction)
-- Stage 3: VIP Gate & Dual-Regime Dispatch Floor
+- Stage 3: PREMIUM Gate & Dual-Regime Dispatch Floor
 """
 
 from typing import Dict, List, Any
@@ -61,8 +61,10 @@ STAGE2_CLIMAX_VOL_RATIO_LTF: float = 3.5  # On 5m/15m, volume > 3.5x SMA is clim
 STAGE2_CLIMAX_WICK_THRESHOLD: float = 0.25  # Opposing wick > 25% of candle range indicates rejection
 STAGE2_FRICTION_CLIMAX_PENALTY: float = -6.0  # Penalty when volume is climactic and rejected by wick
 STAGE2_FRESH_SQUEEZE_IGNITION_POINTS: float = 10.0  # Institutional bonus for early squeeze ignition on LTF
-STAGE2_VIP_LTF_RSI_MAX_LONG: float = 68.0  # Max RSI for fresh VIP Long on LTF
-STAGE2_VIP_LTF_RSI_MIN_SHORT: float = 32.0  # Min RSI for fresh VIP Short on LTF
+STAGE2_PREMIUM_LTF_RSI_MAX_LONG: float = 68.0  # Max RSI for fresh PREMIUM Long on LTF
+STAGE2_PREMIUM_LTF_RSI_MIN_SHORT: float = 32.0  # Min RSI for fresh PREMIUM Short on LTF
+STAGE2_VIP_LTF_RSI_MAX_LONG = STAGE2_PREMIUM_LTF_RSI_MAX_LONG
+STAGE2_VIP_LTF_RSI_MIN_SHORT = STAGE2_PREMIUM_LTF_RSI_MIN_SHORT
 
 # Microstructure Friction Floor & Penalties (Capped at -10.0% max)
 STAGE2_MAX_FRICTION_FLOOR: float = -10.0
@@ -78,12 +80,15 @@ STAGE2_FRICTION_EXHAUSTION_TRAP_PENALTY: float = -5.0
 STAGE2_ABSORPTION_VOL_THRESHOLD: float = 5.0
 STAGE2_ABSORPTION_MULTIPLIER: float = 0.5
 
-# Stage 3: Tier Thresholds & VIP Gate
-STAGE3_VIP_THRESHOLD: float = 92.0
+# Stage 3: Tier Thresholds & PREMIUM Gate
+STAGE3_PREMIUM_THRESHOLD: float = 92.0
+STAGE3_VIP_THRESHOLD = STAGE3_PREMIUM_THRESHOLD
 STAGE3_STANDARD_THRESHOLD: float = 86.0
 STAGE3_REVERSAL_THRESHOLD: float = 80.0
-STAGE3_VIP_CAPPED_SCORE: float = 91.9
-STAGE3_VIP_MIN_BOOK_DEPTH_USD: float = 250000.0
+STAGE3_PREMIUM_CAPPED_SCORE: float = 91.9
+STAGE3_VIP_CAPPED_SCORE = STAGE3_PREMIUM_CAPPED_SCORE
+STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD: float = 250000.0
+STAGE3_VIP_MIN_BOOK_DEPTH_USD = STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD
 
 
 def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -91,7 +96,7 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     Two-Stage Parametric Confluence Engine:
     - Stage 1: Hard Binary Sanity Gate (The Circuit Breaker with Ghost Scoring)
     - Stage 2: Parametric Continuous Scoring (3-Tier Institutional Hierarchy)
-    - Stage 3: The VIP Gate (Tier Classification & Dual-Regime Floor)
+    - Stage 3: The PREMIUM Gate (Tier Classification & Dual-Regime Floor)
 
     Pure deterministic function: Zero async network calls, Zero LLM dependencies, Zero JSON parsing.
     """
@@ -530,10 +535,11 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     final_score = round(max(0.0, min(100.0, net_score)), 1)
     
     # --------------------------------------------------------------------------
-    # STAGE 3: The VIP Gate & Dual-Regime Floor (Tier Classification)
+    # STAGE 3: The PREMIUM Gate & Dual-Regime Floor (Tier Classification)
     # --------------------------------------------------------------------------
+    premium_capped = False
     vip_capped = False
-    vip_thresh = float(signal_data.get('_override_vip_threshold', STAGE3_VIP_THRESHOLD))
+    premium_thresh = float(signal_data.get('_override_premium_threshold', STAGE3_PREMIUM_THRESHOLD))
     
     # Dual-Regime Dispatch Floor: Reversals dispatch at 80.0%, Continuations at 86.0% (unless overridden by caller/pipeline)
     if is_reversal:
@@ -541,9 +547,9 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     else:
         std_thresh = float(signal_data.get('_override_standard_threshold', STAGE3_STANDARD_THRESHOLD))
     
-    vip_capped_score = round(vip_thresh - 0.1, 1)
+    premium_capped_score = round(premium_thresh - 0.1, 1)
 
-    is_structural_vip = (
+    is_structural_premium = (
         tf in ['5m', '15m'] and 
         level_points >= 4.0 and 
         ob_defensive_shield and 
@@ -553,7 +559,7 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
         not is_climax_trap and
         final_score >= 76.0
     )
-    is_squeeze_vip = (
+    is_squeeze_premium = (
         tf in ['5m', '15m'] and 
         is_fresh_squeeze_ignition and 
         macro_trend_aligned and 
@@ -565,38 +571,38 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     if circuit_breaker_tripped:
         tier = "REJECTED"
         rejection_reason = fatal_flaw
-    elif final_score >= vip_thresh or is_structural_vip or is_squeeze_vip:
+    elif final_score >= premium_thresh or is_structural_premium or is_squeeze_premium:
         missing = []
-        if not is_structural_vip and vol_points <= 0.0:
+        if not is_structural_premium and vol_points <= 0.0:
             missing.append("Volume Surge")
-        if level_points <= 0.0 and not is_squeeze_vip:
+        if level_points <= 0.0 and not is_squeeze_premium:
             missing.append("Key Level Precision")
         if has_sweep_risk:
             missing.append("No Sweep Risk (Opposing pool detected)")
         if not macro_trend_aligned:
             missing.append("Multi-Timeframe Macro Alignment")
-        if not is_squeezed and not is_structural_vip:
+        if not is_squeezed and not is_structural_premium:
             missing.append("Volatility Squeeze Compression (Bollinger inside Keltner)")
-        if book_depth < STAGE3_VIP_MIN_BOOK_DEPTH_USD:
-            missing.append(f"Order Book Depth (>= ${STAGE3_VIP_MIN_BOOK_DEPTH_USD/1000:.0f}k)")
+        if book_depth < STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD:
+            missing.append(f"Order Book Depth (>= ${STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD/1000:.0f}k)")
 
         # Microstructure Climax Filter for Lower Timeframes (5m, 15m)
         if tf in ['5m', '15m']:
             if is_climax_trap or exhaustion_trap:
                 missing.append("No Climax Trap (Volume or Wick Exhaustion)")
-            if (is_long and rsi_14 > STAGE2_VIP_LTF_RSI_MAX_LONG) or (is_short and rsi_14 < STAGE2_VIP_LTF_RSI_MIN_SHORT):
+            if (is_long and rsi_14 > STAGE2_PREMIUM_LTF_RSI_MAX_LONG) or (is_short and rsi_14 < STAGE2_PREMIUM_LTF_RSI_MIN_SHORT):
                 missing.append("RSI Momentum Runway (RSI not overextended)")
             if ratio > STAGE2_CLIMAX_VOL_RATIO_LTF:
                 missing.append(f"Orderly Volume (Vol {ratio:.1f}x <= {STAGE2_CLIMAX_VOL_RATIO_LTF}x)")
 
             # Adjustment 5: Double-Barrel Macro Filter for VIP > 85%
-            # Mandates that for 5m/15m setups to achieve VIP tier (>= 88%), 4H ADX must be > 25 with matching +DI/-DI
-            require_4h_adx = getattr(settings, 'vip_require_4h_adx_alignment', True)
+            # Mandates that for 5m/15m setups to achieve PREMIUM tier (>= 88%), 4H ADX must be > 25 with matching +DI/-DI
+            require_4h_adx = getattr(settings, 'premium_require_4h_adx_alignment', getattr(settings, 'vip_require_4h_adx_alignment', True))
             if require_4h_adx and 'adx_4h' in signal_data:
                 adx_4h = float(signal_data.get('adx_4h', 0.0))
                 plus_di_4h = float(signal_data.get('plus_di_4h', 0.0))
                 minus_di_4h = float(signal_data.get('minus_di_4h', 0.0))
-                min_adx = float(getattr(settings, 'vip_macro_adx_threshold', 25.0))
+                min_adx = float(getattr(settings, 'premium_macro_adx_threshold', getattr(settings, 'vip_macro_adx_threshold', 25.0)))
 
                 if adx_4h < min_adx:
                     missing.append(f"4H Macro ADX Strong Trend (ADX {adx_4h:.1f} > {min_adx:.0f})")
@@ -606,18 +612,19 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
                     missing.append("4H Directional Trend Alignment (-DI > +DI)")
 
         if not missing:
-            tier = "VIP"
+            tier = "PREMIUM"
             rejection_reason = ""
-            if final_score < vip_thresh:
-                final_score = round(max(final_score, vip_thresh), 1)
-                vip_reason = "Structural Precision Entry" if is_structural_vip else "Fresh Squeeze Ignition"
-                checklist.append(f"👑 VIP Tier Qualification: {vip_reason} (84.6% - 87.5% Empirical Win Rate)")
+            if final_score < premium_thresh:
+                final_score = round(max(final_score, premium_thresh), 1)
+                premium_reason = "Structural Precision Entry" if is_structural_premium else "Fresh Squeeze Ignition"
+                checklist.append(f"👑 PREMIUM Tier Qualification: {premium_reason} (84.6% - 87.5% Empirical Win Rate)")
         else:
-            final_score = min(final_score, vip_capped_score)
+            final_score = min(final_score, premium_capped_score)
             tier = "STANDARD" if final_score >= std_thresh else "REJECTED"
+            premium_capped = True
             vip_capped = True
             rejection_reason = ""
-            checklist.append(f"[VIP Gate] Capped at {vip_capped_score:.1f}% (Missing {' & '.join(missing)})")
+            checklist.append(f"[PREMIUM Gate] Capped at {premium_capped_score:.1f}% (Missing {' & '.join(missing)})")
     elif final_score >= std_thresh:
         tier = "STANDARD"
         rejection_reason = ""
@@ -642,6 +649,7 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
         "net_score": round(net_score, 2),
         "final_score": final_score,
         "tier": tier,
+        "premium_capped": premium_capped,
         "vip_capped": vip_capped,
         "has_sweep_risk": has_sweep_risk,
         "macro_trend_aligned": macro_trend_aligned,

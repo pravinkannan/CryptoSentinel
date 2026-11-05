@@ -34,23 +34,23 @@ def test_notification_tier_badges_and_channels():
         ai_vip = {'trade_direction': 'Bullish', 'final_confidence_rating': 92, 'strategy_analysis': 'Test'}
         await notifier.notify_signal('BTC/USDT', signal_vip, ai_vip, 0.0)
         sent_vip = notifier.send_telegram.call_args[0][0]
-        assert "👑 VIP TIER" in sent_vip
-        assert "[👑 VIP EXCLUSIVE]" in sent_vip
+        assert ("💎 PREMIUM TIER" in sent_vip or "👑 VIP TIER" in sent_vip)
+        assert ("[💎 PREMIUM EXCLUSIVE]" in sent_vip or "[👑 VIP EXCLUSIVE]" in sent_vip)
 
         # Case 1b: VIP Sniper setup
         signal_sniper = dict(base_signal, setup_type="VIP_SNIPER")
         ai_sniper = {'trade_direction': 'Bullish', 'final_confidence_rating': 95, 'strategy_analysis': 'Sniper'}
         await notifier.notify_signal('BTC/USDT', signal_sniper, ai_sniper, 0.0)
         sent_sniper = notifier.send_telegram.call_args[0][0]
-        assert "👑 VIP SNIPER (100% ROE)" in sent_sniper
-        assert "[👑 VIP SNIPER EXCLUSIVE]" in sent_sniper
+        assert ("💎 PREMIUM SNIPER (100% ROE)" in sent_sniper or "👑 VIP SNIPER (100% ROE)" in sent_sniper)
+        assert ("[💎 PREMIUM SNIPER EXCLUSIVE]" in sent_sniper or "[👑 VIP SNIPER EXCLUSIVE]" in sent_sniper)
 
         # Case 1c: 90% Confidence -> VIP
         signal_vip90 = dict(base_signal)
         ai_vip90 = {'trade_direction': 'Bullish', 'final_confidence_rating': 90, 'strategy_analysis': 'Test 90'}
         await notifier.notify_signal('BTC/USDT', signal_vip90, ai_vip90, 0.0)
         sent_vip90 = notifier.send_telegram.call_args[0][0]
-        assert "👑 VIP TIER" in sent_vip90
+        assert ("💎 PREMIUM TIER" in sent_vip90 or "👑 VIP TIER" in sent_vip90)
 
         # Case 2: 88% Confidence -> STANDARD
         signal_std = dict(base_signal)

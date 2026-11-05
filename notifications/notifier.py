@@ -281,7 +281,7 @@ class NotificationService:
         
         channels = signal_data.get('dispatch_channels', [])
         if not channels:
-            channels = ["VIP"] if confidence >= settings.vip_confidence_threshold else ["STANDARD"]
+            channels = ["PREMIUM"] if confidence >= getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 89.0)) else ["STANDARD"]
             
         regime = signal_data.get('regime', 'NORMAL')
         outcome = signal_data.get('outcome', '')
@@ -292,13 +292,13 @@ class NotificationService:
             
         setup_type = signal_data.get('setup_type', '')
         channel_tags = []
-        if "VIP" in channels:
-            if setup_type == "VIP_SNIPER":
-                channel_tags.append("[👑 VIP SNIPER EXCLUSIVE]")
+        if "PREMIUM" in channels or "VIP" in channels:
+            if setup_type in ["PREMIUM_SNIPER", "VIP_SNIPER"]:
+                channel_tags.append("[💎 PREMIUM SNIPER EXCLUSIVE]")
             else:
-                channel_tags.append("[👑 VIP EXCLUSIVE]")
+                channel_tags.append("[💎 PREMIUM EXCLUSIVE]")
         if "STANDARD_SPOTLIGHT" in channels:
-            channel_tags.append("[⭐️ DAILY VIP SPOTLIGHT TRADE]")
+            channel_tags.append("[⭐️ DAILY PREMIUM SPOTLIGHT TRADE]")
         elif "STANDARD" in channels:
             channel_tags.append("[📈 STANDARD FEED]")
             
@@ -343,10 +343,10 @@ class NotificationService:
         roe_tp1 = round(abs(float(signal_data.get('roe_tp1') or signal_data.get('roe_tp') or (tp1_pct * lev))), 2)
         overall_tp2_roe = round(abs(float(signal_data.get('overall_tp2_roe') or (((close_ratio_pct / 100.0) * tp1_pct + ((rem_ratio_pct / 100.0) * tp2_pct)) * lev))), 2)
 
-        if setup_type == "VIP_SNIPER":
-            tier_badge = "👑 VIP SNIPER (100% ROE)"
-        elif confidence >= settings.vip_confidence_threshold:
-            tier_badge = "👑 VIP TIER"
+        if setup_type in ["PREMIUM_SNIPER", "VIP_SNIPER"]:
+            tier_badge = "💎 PREMIUM SNIPER (100% ROE)"
+        elif confidence >= getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 89.0)):
+            tier_badge = "💎 PREMIUM TIER"
         else:
             tier_badge = "🔹 STANDARD TIER"
 

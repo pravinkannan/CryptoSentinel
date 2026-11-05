@@ -690,7 +690,7 @@ class TimeMachine:
 
         # Enforce exact dispatch thresholds as specified (87.5% VIP offset for closed candles)
         self.target_std_threshold: float = 85.5
-        self.target_vip_threshold: float = 87.5
+        self.target_premium_threshold: float = 87.5
 
         self.downloader = HistoricalDataDownloader(
             primary_exchange=self.exchange_name,
@@ -704,7 +704,7 @@ class TimeMachine:
         self.total_ghost_rejected: int = 0
         self.max_score_achieved: float = 0.0
         self.standard_dispatches: int = 0
-        self.vip_dispatches: int = 0
+        self.premium_dispatches: int = 0
 
     def _sanitize_db_path(self, db_path: str) -> str:
         """
@@ -748,14 +748,17 @@ class TimeMachine:
     async def run(self) -> Dict[str, Any]:
         """Executes the simulation loop with threshold isolation."""
         orig_std = settings.min_dispatch_confidence
+        orig_prem = getattr(settings, "premium_confidence_threshold", 89.0)
         orig_vip = settings.vip_confidence_threshold
         settings.min_dispatch_confidence = self.target_std_threshold
-        settings.vip_confidence_threshold = self.target_vip_threshold
+        settings.vip_confidence_threshold = self.target_premium_threshold
+        settings.premium_confidence_threshold = self.target_premium_threshold
         try:
             return await self._run_simulation()
         finally:
             settings.min_dispatch_confidence = orig_std
             settings.vip_confidence_threshold = orig_vip
+            settings.premium_confidence_threshold = orig_prem
 
     async def _run_simulation(self) -> Dict[str, Any]:
         await self._clean_backtest_db()
@@ -851,7 +854,7 @@ class TimeMachine:
 
         print(f"\n[TIME MACHINE] Starting simulation across {total_steps} {self.timeframe} steps...")
         print(f"[*] State Isolation: Utilizing '{self.db_path}' (Production sentinel.db protected).")
-        print(f"[*] Thresholds: Standard >= {settings.min_dispatch_confidence}% | VIP >= {settings.vip_confidence_threshold}%\n")
+        print(f"[*] Thresholds: Standard >= {settings.min_dispatch_confidence}% | PREMIUM >= {settings.vip_confidence_threshold}%\n")
 
         last_time: Optional[datetime] = None
 
@@ -925,11 +928,11 @@ class TimeMachine:
                                 elif sized_order:
                                     engine_tier = str(sized_order.get("tier", ""))
 
-                                is_vip = (engine_tier == "VIP") or (conf >= settings.vip_confidence_threshold)
-                                tier = "VIP" if is_vip else "STANDARD"
+                                is_vip = (engine_tier in ["PREMIUM", "VIP"]) or (conf >= settings.vip_confidence_threshold)
+                                tier = "PREMIUM" if is_vip else "STANDARD"
     
                                 if is_vip:
-                                    self.vip_dispatches += 1
+                                    self.premium_dispatches += 1
                                 else:
                                     self.standard_dispatches += 1
     
@@ -974,7 +977,7 @@ class TimeMachine:
         closed = self.simulator.closed_trades
 
         std_trades = [t for t in closed if t.tier == "STANDARD"]
-        vip_trades = [t for t in closed if t.tier == "VIP"]
+        vip_trades = [t for t in closed if t.tier in ["PREMIUM", "VIP"]]
 
         def calc_tier_stats(trades: List[SimulatedTrade]) -> Dict[str, Any]:
             if not trades:
@@ -1013,7 +1016,7 @@ class TimeMachine:
             }
 
         std_stats = calc_tier_stats(std_trades)
-        vip_stats = calc_tier_stats(vip_trades)
+        premium_stats = calc_tier_stats(vip_trades)
         all_stats = calc_tier_stats(closed)
 
         # Calculate Max Drawdown from sequential equity curve
@@ -1038,7 +1041,7 @@ class TimeMachine:
             "total_ghost_rejected": self.total_ghost_rejected,
             "max_score_achieved": self.max_score_achieved,
             "standard_stats": std_stats,
-            "vip_stats": vip_stats,
+            "premium_stats": premium_stats,
             "all_stats": all_stats,
             "max_drawdown_pct": max_drawdown_pct,
             "final_equity": current_equity,
@@ -1046,7 +1049,7 @@ class TimeMachine:
 
     def _print_report(self, r: Dict[str, Any]) -> None:
         std = r["standard_stats"]
-        vip = r["vip_stats"]
+        vip = r["premium_stats"]
         all_s = r["all_stats"]
 
         header = "=" * 78
@@ -1070,7 +1073,7 @@ class TimeMachine:
         print(f"   * Net Simulated PnL:       {std['net_pnl']:+.2f}%")
         print(f"   * Avg Win / Avg Loss:      {std['avg_win']:+.2f}% / {std['avg_loss']:+.2f}% (R:R {std['rr_ratio']:.2f})")
         print(sub_header)
-        print(" [3] VIP TIER PERFORMANCE (Score >= 87.5%):")
+        print(" [3] PREMIUM TIER PERFORMANCE (Score >= 87.5%):")
         print(f"   * Total Trades:            {vip['total_trades']}")
         print(f"   * Win Rate:                {vip['win_rate']:.2f}% ({vip['wins']} W / {vip['losses']} L)")
         print(f"   * Net Simulated PnL:       {vip['net_pnl']:+.2f}%")

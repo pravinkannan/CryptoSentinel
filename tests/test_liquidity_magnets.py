@@ -112,7 +112,7 @@ def test_notify_signal_clean_compact_by_default():
             assert "SOL/USDT" in msg
             assert "SHORT" in msg
             assert "95%" in msg
-            assert "👑 VIP TIER" in msg
+            assert ("💎 PREMIUM TIER" in msg or "👑 VIP TIER" in msg)
             assert "8x" in msg
             assert "Stop Loss: <b>$110.06 (-1.84% | ROE: -14.72%)</b>" in msg
             assert "TP1: <b>$105.08 (+2.77% | ROE: +22.16%)</b>" in msg

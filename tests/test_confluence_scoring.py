@@ -524,7 +524,7 @@ def test_stage_3_vip_gate_qualification_continuous_score():
     # Net: 64.0 + 8.0 + 5.0 + 4.0 + 4.5 + 6.5 + 5.0 (RSI Div) = 97.0
     res = evaluate_confluence_score("ETH/USDT", sig_vip)
     assert res["final_score"] >= 92.0
-    assert res["tier"] == "VIP"
+    assert res["tier"] in ["PREMIUM", "VIP"]
     assert res["eval_trace"]["vip_capped"] is False
     assert res["final_score"] == 98.0
 
@@ -858,7 +858,7 @@ def test_eval_trace_detailed_logging():
     assert isinstance(trace["friction"], float)
     assert isinstance(trace["net_score"], float)
     assert isinstance(trace["final_score"], float)
-    assert trace["tier"] in ["VIP", "STANDARD", "REJECTED"]
+    assert trace["tier"] in ["PREMIUM", "VIP", "STANDARD", "REJECTED"]
     
     # Verify breakdown fields
     bd = trace["breakdown"]
@@ -1380,7 +1380,7 @@ def test_stage_2_flawless_100_percent_confluence():
     assert trace["friction"] == 0.0
     assert trace["net_score"] == 100.0
     assert res["final_score"] == 100.0
-    assert res["tier"] == "VIP"
+    assert res["tier"] in ["PREMIUM", "VIP"]
     assert trace["vip_capped"] is False
 
 

@@ -291,13 +291,13 @@ class RiskManager:
     def recalibrate_for_tier(
         self,
         signal_data: Dict[str, Any],
-        is_vip: bool,
+        is_premium: bool = False, is_vip: bool = False,
         liquidity_magnets: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Recalibrates leverage, stop loss, and take profit targets based on evaluated tier:
-        - VIP Tier: Differentiates between VIP_SNIPER (leaning against institutional wall on BTC/ETH)
-          and VIP_SWING (macro trend expansion on 1h or altcoins).
+        - VIP Tier: Differentiates between PREMIUM_SNIPER (leaning against institutional wall on BTC/ETH)
+          and PREMIUM_SWING (macro trend expansion on 1h or altcoins).
         - Standard Tier: Applies disciplined swing leverage (20x-25x on BTC/ETH, 10x-12x on Altcoins)
           with 70% profit-take at TP1 and auto-breakeven at 1.0R.
         """
@@ -319,14 +319,15 @@ class RiskManager:
         
         # Determine if setup qualifies as a VIP Sniper
         # Requires: VIP tier, BTC/ETH, 5m or 15m timeframe, and an active defensive order book wall
-        is_sniper = is_vip and is_major and (timeframe in ['5m', '15m']) and has_shield
+        is_prem = is_premium or is_vip
+        is_sniper = is_prem and is_major and (timeframe in ['5m', '15m']) and has_shield
 
         initial_sl = float(signal_data.get('stop_loss', entry * 0.98 if is_long else entry * 1.02))
         sl_pct = abs(entry - initial_sl) / entry * 100.0
 
         if is_sniper:
-            setup_type = "VIP_SNIPER"
-            target_max_lev = getattr(settings, 'vip_max_leverage_btc', 60.0) if is_btc else getattr(settings, 'vip_max_leverage_eth', 40.0)
+            setup_type = "PREMIUM_SNIPER"
+            target_max_lev = getattr(settings, 'premium_max_leverage_btc', getattr(settings, 'vip_max_leverage_btc', 60.0)) if is_btc else getattr(settings, 'premium_max_leverage_eth', getattr(settings, 'vip_max_leverage_eth', 40.0))
             
             # Find defensive wall price to anchor SL safely behind it
             shield_pools = [
@@ -361,8 +362,8 @@ class RiskManager:
             target_tp2_pct = round(target_tp1_pct * 1.5, 2)
             tp2 = entry + (entry * target_tp2_pct / 100.0) if is_long else entry - (entry * target_tp2_pct / 100.0)
             
-        elif is_vip:
-            setup_type = "VIP_SWING"
+        elif (is_premium or is_vip):
+            setup_type = "PREMIUM_SWING"
             if is_major:
                 max_lev = getattr(settings, 'std_max_leverage_btc_eth', 25.0)
                 rec_lev_val = max(5, min(int(max_lev), math.floor(35.0 / max(0.8, sl_pct))))
@@ -370,7 +371,7 @@ class RiskManager:
                 max_lev = 25.0
                 rec_lev_val = max(5, min(int(max_lev), math.floor(25.0 / max(0.50, sl_pct))))
             else:
-                max_lev = getattr(settings, 'vip_max_leverage_alt', 20.0)
+                max_lev = getattr(settings, 'premium_max_leverage_alt', getattr(settings, 'vip_max_leverage_alt', 20.0))
                 rec_lev_val = max(5, min(int(max_lev), math.floor(30.0 / max(1.2, sl_pct))))
                 
             if timeframe == '5m':
