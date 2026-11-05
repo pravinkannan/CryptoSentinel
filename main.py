@@ -31,6 +31,9 @@ class CryptoSentinelApp:
         self.notifier = NotificationService(telegram_token=settings.telegram_bot_token, telegram_chat_id=settings.telegram_chat_id)
         self.notifier.journal_manager = self.journal_manager
         self.notifier.recon_handler = self.execute_recon_scan
+        self.notifier.calendar_guard = self.calendar_guard
+        self.calendar_guard.set_notifier(self.notifier)
+        self.calendar_guard.set_state_manager(self.state_manager)
         self.event_bus.subscribe(TradeClosedEvent, self.repository.on_trade_closed); self.event_bus.subscribe(TradeClosedEvent, self._handle_trade_closed)
 
     def build_pipeline(self) -> SignalPipeline:

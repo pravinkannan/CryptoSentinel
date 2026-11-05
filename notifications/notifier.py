@@ -42,6 +42,7 @@ class NotificationService:
         self.dp = Dispatcher()
         self.journal_manager: Any = None
         self.recon_handler: Optional[Any] = None
+        self.calendar_guard: Optional[Any] = None
         
         self._register_handlers()
         if self.bot_token:
@@ -207,6 +208,27 @@ class NotificationService:
                     f"❌ <b>Recon Failed for {symbol}</b>\n<code>{str(e)}</code>",
                     parse_mode="HTML"
                 )
+
+        @self.dp.message(Command("calendar"))
+        async def calendar_command(message: Message):
+            if not self.is_authorized(self.get_message_chat_id(message)):
+                await self._deny_unauthorized(message)
+                return
+
+            if not self.calendar_guard:
+                await message.reply("❌ Calendar Guard service is not initialized on the application pipeline.", parse_mode="HTML")
+                return
+
+            events = self.calendar_guard.get_upcoming_high_impact_events()
+            if not events:
+                await message.reply(
+                    "📅 <b>Economic Calendar</b>: No upcoming high-impact USD events detected for this week. Safe macro conditions for normal trading.", 
+                    parse_mode="HTML"
+                )
+                return
+
+            report = self.calendar_guard.format_upcoming_events_alert(events, is_on_demand=True)
+            await message.reply(report, parse_mode="HTML")
 
     async def start_polling(self) -> None:
         """Start the aiogram bot polling loop with automatic reconnection on network drops."""
