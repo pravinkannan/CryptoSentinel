@@ -18,3 +18,4 @@ Thumbs.db
 scratch/
 data/historical/
 data/*.json
+preview.html

@@ -83,59 +83,66 @@
   <!-- ================= TERMINAL SAMPLE LOG WINDOW ================= -->
   <g transform="translate(35, 95)">
     <!-- Window Frame -->
-    <rect x="0" y="0" width="540" height="195" rx="10" fill="url(#terminalBg)" stroke="#1e293b" stroke-width="1.2" />
+    <rect x="0" y="0" width="550" height="195" rx="10" fill="url(#terminalBg)" stroke="#1e293b" stroke-width="1.2" />
     
     <!-- Top Bar -->
-    <rect x="0" y="0" width="540" height="28" rx="10" fill="#0d1424" />
+    <rect x="0" y="0" width="550" height="28" rx="10" fill="#0d1424" />
     <circle cx="16" cy="14" r="4" fill="#ef4444" opacity="0.8" />
     <circle cx="30" cy="14" r="4" fill="#f59e0b" opacity="0.8" />
     <circle cx="44" cy="14" r="4" fill="#10b981" opacity="0.8" />
     <text x="65" y="18" fill="#64748b" font-size="10" font-weight="600" class="font-mono">daemon://sentinel-core.log</text>
 
     <!-- Realistic Daemon Output Logs (Static clean layout: no overlapping CSS transforms) -->
-    <g class="font-mono" font-size="10.5">
+    <g class="font-mono" font-size="10">
       <!-- Line 1 -->
-      <text x="18" y="52">
+      <text x="16" y="52">
         <tspan fill="#64748b">18:30:02</tspan>
         <tspan fill="#38bdf8" font-weight="700"> [INFO]</tspan>
         <tspan fill="#94a3b8"> Market feeds synchronized: </tspan>
-        <tspan fill="#10b981" font-weight="700">BYBIT / BINANCE (OK)</tspan>
+        <tspan fill="#10b981" font-weight="700">BYBIT / BINANCE (Pool: OK)</tspan>
       </text>
 
       <!-- Line 2 -->
-      <text x="18" y="74">
+      <text x="16" y="74">
         <tspan fill="#64748b">18:30:05</tspan>
-        <tspan fill="#38bdf8" font-weight="700"> [INFO]</tspan>
-        <tspan fill="#94a3b8"> Order book scanner engaged: </tspan>
+        <tspan fill="#38bdf8" font-weight="700"> [SCAN]</tspan>
+        <tspan fill="#94a3b8"> Monitoring order book depth: </tspan>
         <tspan fill="#00f0ff" font-weight="700">BTC, ETH, SOL, XAU</tspan>
       </text>
 
-      <!-- Line 3 -->
-      <text x="18" y="96">
-        <tspan fill="#64748b">18:30:12</tspan>
-        <tspan fill="#a78bfa" font-weight="700"> [AUDIT]</tspan>
-        <tspan fill="#94a3b8"> Confluence criteria satisfied </tspan>
-        <tspan fill="#a78bfa" font-weight="700">(Score: 89.2% &gt; 85.5%)</tspan>
+      <!-- Line 3 (User requested pattern detection) -->
+      <text x="16" y="96">
+        <tspan fill="#64748b">18:30:12 </tspan>
+        <tspan fill="#f59e0b">🎯 [SOL/USDT 5m] </tspan>
+        <tspan fill="#e2e8f0">Pattern: </tspan>
+        <tspan fill="#f87171" font-weight="700">Bearish 20/50 EMA Crossover </tspan>
+        <tspan fill="#94a3b8">(Evaluating confluence...)</tspan>
       </text>
 
-      <!-- Line 4 -->
-      <text x="18" y="118">
+      <!-- Line 4 (User requested trade dispatched) -->
+      <text x="16" y="118">
+        <tspan fill="#64748b">18:30:14 </tspan>
+        <tspan fill="#10b981">🚀 [SOL/USDT 5m] </tspan>
+        <tspan fill="#e2e8f0">Result: </tspan>
+        <tspan fill="#38bdf8" font-weight="700">Trade Dispatched </tspan>
+        <tspan fill="#94a3b8">- SOL_20261105_121230 </tspan>
+        <tspan fill="#f87171" font-weight="700">SHORT</tspan>
+      </text>
+
+      <!-- Line 5 (Score, Tier, Telegram dispatch) -->
+      <text x="16" y="140">
         <tspan fill="#64748b">18:30:15</tspan>
-        <tspan fill="#10b981" font-weight="700"> [ARMOR]</tspan>
-        <tspan fill="#94a3b8"> Capital preservation check: </tspan>
-        <tspan fill="#10b981" font-weight="700">0.00% DD (Circuit OK)</tspan>
-      </text>
-
-      <!-- Line 5 -->
-      <text x="18" y="140">
-        <tspan fill="#64748b">18:30:18</tspan>
-        <tspan fill="#f59e0b" font-weight="700"> [DISPATCH]</tspan>
-        <tspan fill="#f8fafc" font-weight="700"> Signal sent ➔ Telegram </tspan>
-        <tspan fill="#10b981" font-weight="700">[SL &amp; TP Armed]</tspan>
+        <tspan fill="#a78bfa" font-weight="700"> [VIP]</tspan>
+        <tspan fill="#94a3b8"> Score: </tspan>
+        <tspan fill="#10b981" font-weight="700">89.0% </tspan>
+        <tspan fill="#94a3b8">| Stop Loss: </tspan>
+        <tspan fill="#10b981" font-weight="700">Armed </tspan>
+        <tspan fill="#94a3b8">| Broadcast ➔ </tspan>
+        <tspan fill="#38bdf8" font-weight="700">Telegram Channel</tspan>
       </text>
 
       <!-- Line 6 (Listening daemon prompt with blinking cursor) -->
-      <text x="18" y="164">
+      <text x="16" y="164">
         <tspan fill="#38bdf8" font-weight="700">❯ </tspan>
         <tspan fill="#64748b">sentinel daemon listening for market ticks... </tspan>
         <tspan fill="#10b981">█<animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite" /></tspan>
