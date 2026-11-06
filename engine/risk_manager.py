@@ -349,21 +349,37 @@ class RiskManager:
                         initial_sl = wall_sl
                 sl_pct = abs(entry - initial_sl) / entry * 100.0
 
+            if timeframe == '5m':
+                # Institutional Anti-Noise Cushion for 5m Sniper (prevents 2-bps noise wickouts)
+                prem_5m_min_sl = 1.05 if is_btc else 1.30
+                if sl_pct < prem_5m_min_sl:
+                    sl_pct = prem_5m_min_sl
+                    initial_sl = entry * (1.0 - prem_5m_min_sl / 100.0) if is_long else entry * (1.0 + prem_5m_min_sl / 100.0)
             # Ensure minimum SL floor of 0.65% to avoid hyper-tight noise stopouts
-            if sl_pct < 0.65:
+            elif sl_pct < 0.65:
                 sl_pct = 0.65
                 initial_sl = entry * (1.0 - 0.0065) if is_long else entry * (1.0 + 0.0065)
 
             rec_lev_val = max(10, min(int(target_max_lev), math.floor(45.0 / sl_pct)))
             
             # Target TP1 for Sniper: ~80% to 100% ROE
-            target_tp1_pct = max(sl_pct * 1.5, round(90.0 / rec_lev_val, 2))
+            if timeframe == '5m':
+                target_tp1_pct = round(max(0.70, min(1.05, sl_pct * 0.80)), 2)
+            else:
+                target_tp1_pct = max(sl_pct * 1.5, round(90.0 / rec_lev_val, 2))
             tp1 = entry + (entry * target_tp1_pct / 100.0) if is_long else entry - (entry * target_tp1_pct / 100.0)
             target_tp2_pct = round(target_tp1_pct * 1.5, 2)
             tp2 = entry + (entry * target_tp2_pct / 100.0) if is_long else entry - (entry * target_tp2_pct / 100.0)
             
         elif (is_premium or is_vip):
             setup_type = "PREMIUM_SWING"
+            if timeframe == '5m':
+                # Institutional Anti-Noise Cushion for 5m Premium (prevents 2-bps exchange noise wickouts)
+                prem_5m_min_sl = 0.65 if is_commodity else (0.95 if is_btc else (1.05 if is_eth else 1.65))
+                if sl_pct < prem_5m_min_sl:
+                    sl_pct = prem_5m_min_sl
+                    initial_sl = entry * (1.0 - prem_5m_min_sl / 100.0) if is_long else entry * (1.0 + prem_5m_min_sl / 100.0)
+
             if is_major:
                 max_lev = getattr(settings, 'std_max_leverage_btc_eth', 25.0)
                 rec_lev_val = max(5, min(int(max_lev), math.floor(35.0 / max(0.8, sl_pct))))

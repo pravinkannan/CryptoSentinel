@@ -78,10 +78,14 @@ def run_champions():
         summary = calibrator.calibrate(trades)
 
         real_trades = [t for t in trades if t.status != "MARK_TO_MARKET"]
-        premium_trades = [t for t in real_trades if t.tier in ["PREMIUM", "VIP"] or t.confidence_score >= 88.0]
+        premium_trades = [t for t in real_trades if t.tier in ["PREMIUM", "VIP"]]
+        standard_trades = [t for t in real_trades if t.tier not in ["PREMIUM", "VIP"]]
 
         premium_wr = (sum(1 for t in premium_trades if t.net_pnl_pct > 0) / len(premium_trades) * 100) if premium_trades else 0.0
         premium_pnl = sum(t.net_pnl_pct for t in premium_trades)
+
+        standard_wr = (sum(1 for t in standard_trades if t.net_pnl_pct > 0) / len(standard_trades) * 100) if standard_trades else 0.0
+        standard_pnl = sum(t.net_pnl_pct for t in standard_trades)
 
         global_wr = summary.overall_win_rate_pct
         global_pnl = summary.overall_net_pnl_pct
@@ -94,17 +98,34 @@ def run_champions():
             "global_wr": round(global_wr, 1),
             "global_pnl": round(global_pnl, 2),
             "pf": round(pf, 2),
+            "standard_trades": len(standard_trades),
+            "standard_wr": round(standard_wr, 1),
+            "standard_pnl": round(standard_pnl, 2),
             "premium_trades": len(premium_trades),
             "premium_wr": round(premium_wr, 1),
             "premium_pnl": round(premium_pnl, 2),
         })
 
-        print(f"[*] {sym:<10} {tf:<4} | Trades: {len(real_trades):<3} | WR: {global_wr:>5.1f}% | Net PnL: {global_pnl:>+8.2f}% | PF: {pf:>4.2f} | PREMIUM WR: {premium_wr:>5.1f}% ({dur}s)")
+        print(f"[*] {sym:<10} {tf:<4} | All: {len(real_trades):<3} ({global_wr:>5.1f}%, {global_pnl:>+8.2f}%) | STD: {len(standard_trades):<3} ({standard_wr:>5.1f}%, {standard_pnl:>+8.2f}%) | PREM: {len(premium_trades):<3} ({premium_wr:>5.1f}%, {premium_pnl:>+8.2f}%) ({dur}s)")
 
     print("-" * 105)
     tot_pnl = sum(r['global_pnl'] for r in results)
     avg_wr = sum(r['global_wr'] for r in results) / len(results) if results else 0
-    print(f"Total Approved Champions Net PnL: {tot_pnl:+.2f}% | Avg Win Rate: {avg_wr:.1f}% | Time: {round(time.time() - t_start, 1)}s")
+    tot_prem_n = sum(r['premium_trades'] for r in results)
+    tot_prem_w = sum(round(r['premium_wr'] * r['premium_trades'] / 100) for r in results)
+    tot_prem_wr = (tot_prem_w / tot_prem_n * 100) if tot_prem_n else 0
+    tot_prem_pnl = sum(r['premium_pnl'] for r in results)
+
+    tot_std_n = sum(r['standard_trades'] for r in results)
+    tot_std_w = sum(round(r['standard_wr'] * r['standard_trades'] / 100) for r in results)
+    tot_std_wr = (tot_std_w / tot_std_n * 100) if tot_std_n else 0
+    tot_std_pnl = sum(r['standard_pnl'] for r in results)
+
+    print(f"TOTAL APPROVED CHAMPIONS BENCHMARK:")
+    print(f"  GLOBAL:   {len(results)} pairs | Trades: {tot_prem_n + tot_std_n} | Win Rate: {avg_wr:.1f}% | Net PnL: {tot_pnl:+.2f}%")
+    print(f"  STANDARD: Trades: {tot_std_n} | Win Rate: {tot_std_wr:.1f}% | Net PnL: {tot_std_pnl:+.2f}%")
+    print(f"  PREMIUM:  Trades: {tot_prem_n} | Win Rate: {tot_prem_wr:.1f}% | Net PnL: {tot_prem_pnl:+.2f}%")
+    print(f"Total Elapsed Time: {round(time.time() - t_start, 1)}s")
     print("=" * 105)
     return results
 

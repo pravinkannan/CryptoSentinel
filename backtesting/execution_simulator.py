@@ -264,12 +264,22 @@ class BacktestExecutionSimulator:
 
                 raw_dir = str(signal_data.get("direction", "NEUTRAL")).upper()
                 direction = "LONG" if ("BULL" in raw_dir or "LONG" in raw_dir) else ("SHORT" if ("BEAR" in raw_dir or "SHORT" in raw_dir) else "NEUTRAL")
-                entry_p = float(signal_data.get("entry", current_candle["close"]))
-                sl_p = float(signal_data.get("stop_loss", entry_p * 0.98 if direction == "LONG" else entry_p * 1.02))
-                tp1_p = float(signal_data.get("tp1", signal_data.get("take_profit", entry_p * 1.03 if direction == "LONG" else entry_p * 0.97)))
-                tp2_p = float(signal_data.get("tp2", tp1_p))
-                leverage_val = float(signal_data.get("leverage_val", 2.0))
-                ttl_mins = int(signal_data.get("ttl_mins", settings.trade_ttl_minutes))
+
+                # Recalibrate risk parameters for evaluated tier (matches live pipeline step)
+                is_prem = (tier in ["PREMIUM", "VIP"])
+                sized_data = self.signal_generator.risk_manager.recalibrate_for_tier(
+                    signal_data,
+                    is_premium=is_prem,
+                    is_vip=is_prem,
+                    liquidity_magnets=signal_data.get('liquidity_magnets', [])
+                )
+
+                entry_p = float(sized_data.get("entry", current_candle["close"]))
+                sl_p = float(sized_data.get("stop_loss", entry_p * 0.98 if direction == "LONG" else entry_p * 1.02))
+                tp1_p = float(sized_data.get("tp1", sized_data.get("take_profit", entry_p * 1.03 if direction == "LONG" else entry_p * 0.97)))
+                tp2_p = float(sized_data.get("tp2", tp1_p))
+                leverage_val = float(sized_data.get("leverage_val", 2.0))
+                ttl_mins = int(sized_data.get("ttl_mins", settings.trade_ttl_minutes))
 
                 record = ScoredSetupRecord(
                     timestamp=current_ts,

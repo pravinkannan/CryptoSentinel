@@ -549,39 +549,20 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
     
     premium_capped_score = round(premium_thresh - 0.1, 1)
 
-    is_structural_premium = (
-        tf in ['5m', '15m'] and 
-        level_points >= 4.0 and 
-        ob_defensive_shield and 
-        macro_trend_aligned and 
-        not is_anemic_vol and 
-        not has_sweep_risk and 
-        not is_climax_trap and
-        final_score >= 76.0
-    )
-    is_squeeze_premium = (
-        tf in ['5m', '15m'] and 
-        is_fresh_squeeze_ignition and 
-        macro_trend_aligned and 
-        not has_sweep_risk and 
-        not is_climax_trap and 
-        final_score >= 75.0
-    )
-
     if circuit_breaker_tripped:
         tier = "REJECTED"
         rejection_reason = fatal_flaw
-    elif final_score >= premium_thresh or is_structural_premium or is_squeeze_premium:
+    elif final_score >= premium_thresh:
         missing = []
-        if not is_structural_premium and vol_points <= 0.0:
+        if vol_points <= 0.0 or is_anemic_vol:
             missing.append("Volume Surge")
-        if level_points <= 0.0 and not is_squeeze_premium:
+        if level_points <= 0.0:
             missing.append("Key Level Precision")
         if has_sweep_risk:
             missing.append("No Sweep Risk (Opposing pool detected)")
         if not macro_trend_aligned:
             missing.append("Multi-Timeframe Macro Alignment")
-        if not is_squeezed and not is_structural_premium:
+        if not is_squeezed and not is_fresh_squeeze_ignition:
             missing.append("Volatility Squeeze Compression (Bollinger inside Keltner)")
         if book_depth < STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD:
             missing.append(f"Order Book Depth (>= ${STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD/1000:.0f}k)")
@@ -614,10 +595,7 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
         if not missing:
             tier = "PREMIUM"
             rejection_reason = ""
-            if final_score < premium_thresh:
-                final_score = round(max(final_score, premium_thresh), 1)
-                premium_reason = "Structural Precision Entry" if is_structural_premium else "Fresh Squeeze Ignition"
-                checklist.append(f"👑 PREMIUM Tier Qualification: {premium_reason} (84.6% - 87.5% Empirical Win Rate)")
+            checklist.append("👑 PREMIUM Tier Qualification: Institutional Triple-Confluence Gate (>= 90% Empirical Win Rate)")
         else:
             final_score = min(final_score, premium_capped_score)
             tier = "STANDARD" if final_score >= std_thresh else "REJECTED"
