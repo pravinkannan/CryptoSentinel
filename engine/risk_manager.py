@@ -349,12 +349,19 @@ class RiskManager:
                         initial_sl = wall_sl
                 sl_pct = abs(entry - initial_sl) / entry * 100.0
 
-            if timeframe == '5m':
-                # Institutional Anti-Noise Cushion for 5m Sniper (prevents 2-bps noise wickouts)
-                prem_5m_min_sl = 1.05 if is_btc else 1.30
-                if sl_pct < prem_5m_min_sl:
-                    sl_pct = prem_5m_min_sl
-                    initial_sl = entry * (1.0 - prem_5m_min_sl / 100.0) if is_long else entry * (1.0 + prem_5m_min_sl / 100.0)
+            if not shield_pools:
+                if timeframe == '5m':
+                    # Institutional Anti-Noise Cushion for 5m Sniper (prevents 2-bps noise wickouts)
+                    prem_5m_min_sl = 1.05 if is_btc else 1.30
+                    if sl_pct < prem_5m_min_sl:
+                        sl_pct = prem_5m_min_sl
+                        initial_sl = entry * (1.0 - prem_5m_min_sl / 100.0) if is_long else entry * (1.0 + prem_5m_min_sl / 100.0)
+                elif timeframe == '15m' and not is_btc:
+                    # Institutional Anti-Noise Cushion for 15m Sniper on ETH/alts (prevents 0.03% wickouts)
+                    prem_15m_min_sl = 1.15
+                    if sl_pct < prem_15m_min_sl:
+                        sl_pct = prem_15m_min_sl
+                        initial_sl = entry * (1.0 - prem_15m_min_sl / 100.0) if is_long else entry * (1.0 + prem_15m_min_sl / 100.0)
             # Ensure minimum SL floor of 0.65% to avoid hyper-tight noise stopouts
             elif sl_pct < 0.65:
                 sl_pct = 0.65
@@ -363,8 +370,10 @@ class RiskManager:
             rec_lev_val = max(10, min(int(target_max_lev), math.floor(45.0 / sl_pct)))
             
             # Target TP1 for Sniper: ~80% to 100% ROE
-            if timeframe == '5m':
+            if not shield_pools and timeframe == '5m':
                 target_tp1_pct = round(max(0.70, min(1.05, sl_pct * 0.80)), 2)
+            elif not shield_pools and timeframe == '15m' and not is_btc:
+                target_tp1_pct = round(max(1.10, min(1.60, sl_pct * 1.3)), 2)
             else:
                 target_tp1_pct = max(sl_pct * 1.5, round(90.0 / rec_lev_val, 2))
             tp1 = entry + (entry * target_tp1_pct / 100.0) if is_long else entry - (entry * target_tp1_pct / 100.0)

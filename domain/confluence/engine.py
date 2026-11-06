@@ -562,7 +562,9 @@ def evaluate_confluence_score(symbol: str, signal_data: Dict[str, Any]) -> Dict[
             missing.append("No Sweep Risk (Opposing pool detected)")
         if not macro_trend_aligned:
             missing.append("Multi-Timeframe Macro Alignment")
-        if not is_squeezed and not is_fresh_squeeze_ignition:
+        is_gold = symbol.startswith("XAU") or symbol.startswith("PAXG")
+        is_structural_entry = is_gold and (level_points >= 4.0 and ob_defensive_shield and macro_trend_aligned)
+        if not is_squeezed and not is_fresh_squeeze_ignition and not is_structural_entry:
             missing.append("Volatility Squeeze Compression (Bollinger inside Keltner)")
         if book_depth < STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD:
             missing.append(f"Order Book Depth (>= ${STAGE3_PREMIUM_MIN_BOOK_DEPTH_USD/1000:.0f}k)")
