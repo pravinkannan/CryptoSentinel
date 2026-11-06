@@ -292,7 +292,9 @@ class RiskManager:
         self,
         signal_data: Dict[str, Any],
         is_premium: bool = False, is_vip: bool = False,
-        liquidity_magnets: Optional[List[Dict[str, Any]]] = None
+        liquidity_magnets: Optional[List[Dict[str, Any]]] = None,
+        tier: str = "STANDARD",
+        **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Recalibrates leverage, stop loss, and take profit targets based on evaluated tier:

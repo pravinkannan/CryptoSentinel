@@ -259,11 +259,15 @@ class ConfluenceEvaluationStep:
         tf = context.timeframe
         signal_data = context.signal_data
         if '_override_standard_threshold' not in signal_data:
-            signal_data['_override_standard_threshold'] = getattr(settings, 'min_dispatch_confidence', 85.5)
+            signal_data['_override_standard_threshold'] = getattr(settings, 'standard_confidence_threshold', 70.0)
         if '_override_reversal_threshold' not in signal_data:
             signal_data['_override_reversal_threshold'] = getattr(settings, 'min_dispatch_confidence_reversal', 75.0)
         if '_override_premium_threshold' not in signal_data:
-            signal_data['_override_premium_threshold'] = getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 89.0))
+            signal_data['_override_premium_threshold'] = getattr(settings, 'premium_confidence_threshold', 88.0)
+        if '_override_squeeze_points' not in signal_data:
+            signal_data['_override_squeeze_points'] = 3.5
+        if '_override_catalyst_max' not in signal_data:
+            signal_data['_override_catalyst_max'] = 8.0
         direction_raw = str(signal_data.get('direction', 'NEUTRAL')).upper()
         is_long = direction_raw in ['LONG', 'BULLISH', 'BUY']
         is_short = direction_raw in ['SHORT', 'BEARISH', 'SELL']
@@ -542,11 +546,15 @@ class RiskAndPositionSizingStep:
         tf = context.timeframe
         signal_data = context.signal_data
         if '_override_standard_threshold' not in signal_data:
-            signal_data['_override_standard_threshold'] = getattr(settings, 'min_dispatch_confidence', 85.5)
+            signal_data['_override_standard_threshold'] = getattr(settings, 'standard_confidence_threshold', 70.0)
         if '_override_reversal_threshold' not in signal_data:
             signal_data['_override_reversal_threshold'] = getattr(settings, 'min_dispatch_confidence_reversal', 75.0)
         if '_override_premium_threshold' not in signal_data:
-            signal_data['_override_premium_threshold'] = getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 89.0))
+            signal_data['_override_premium_threshold'] = getattr(settings, 'premium_confidence_threshold', 88.0)
+        if '_override_squeeze_points' not in signal_data:
+            signal_data['_override_squeeze_points'] = 3.5
+        if '_override_catalyst_max' not in signal_data:
+            signal_data['_override_catalyst_max'] = 8.0
         ai_data = context.evaluated_signal
         direction = ai_data.get('trade_direction', 'NEUTRAL')
         confidence = float(ai_data.get('final_confidence_rating', 0.0))
@@ -627,8 +635,9 @@ class RiskAndPositionSizingStep:
                     logger.info(f"⏸️ [{symbol} {tf}] Result: No trade - Portfolio correlation guard: max {max_same_dir} active {direction} positions.")
                     return None
 
-        vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 92.0))) if settings else 92.0
-        is_premium = is_vip = (confidence >= vip_thresh)
+        vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 88.0))) if settings else 88.0
+        eval_tier = str(ai_data.get('tier', 'STANDARD') if ai_data else 'STANDARD')
+        is_premium = is_vip = (eval_tier in ['PREMIUM', 'VIP'] or confidence >= vip_thresh)
 
         # Live Bid-Ask Spread Gate (Institutional Protection against Scalper's Slippage Trap)
         micro = context.microstructure or {}
@@ -650,7 +659,9 @@ class RiskAndPositionSizingStep:
         # Recalibrate for tier
         sized_data = self.risk_manager.recalibrate_for_tier(
             signal_data,
+            is_premium=is_premium,
             is_vip=is_vip,
+            tier=eval_tier,
             liquidity_magnets=signal_data.get('liquidity_magnets', [])
         )
 
@@ -703,8 +714,8 @@ class ExecutionDispatchStep:
         confidence = float(ai_data.get('final_confidence_rating', 0.0))
         tier = ai_data.get('tier', 'STANDARD')
         pattern_name = signal_data.get('patterns', ['Unknown'])[0] if signal_data.get('patterns') else 'Unknown'
-        vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 92.0))) if settings else 92.0
-        is_premium = is_vip = (confidence >= vip_thresh)
+        vip_thresh = float(getattr(settings, 'premium_confidence_threshold', getattr(settings, 'vip_confidence_threshold', 88.0))) if settings else 88.0
+        is_premium = is_vip = (tier in ['PREMIUM', 'VIP'] or confidence >= vip_thresh)
 
         # Invalidate opposing active signals & open paper trades if bias flip
         opposing_to_inval = context.metadata.get('opposing_to_invalidate', [])

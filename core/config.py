@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     be_trigger_rr_ratio: float = Field(default=0.5, description="Risk/Reward ratio to trigger moving Stop Loss to Breakeven (+1.0R delayed for crypto)")
     be_trigger_rr_ratio_commodity: float = Field(default=0.30, description="Risk/Reward ratio to trigger moving Stop Loss to Breakeven for commodities (Gold/PAXG +0.30R)")
     roe_risk_budget: float = Field(default=12.0, description="Target max ROE risk budget per trade for leverage sizing")
-    standard_confidence_threshold: float = Field(default=78.0, description="Minimum confidence score for Standard tier dispatch (Quality Filter)")
+    standard_confidence_threshold: float = Field(default=70.0, description="Minimum confidence score for Standard tier dispatch (Quality Filter)")
     min_friction_to_target_ratio: float = Field(default=2.0, description="Pre-execution spread & tax filter: Target Distance % / Execution Tax % must be >= 4.0")
     momentum_decay_bars: int = Field(default=999, description="Max bars allowed in trade before evaluating Smart Stagnation Guard (30-40 mins on 5m)")
     stagnation_r_threshold: float = Field(default=0.15, description="Unrealized R:R threshold for stagnation filter escape velocity at bar 8")
